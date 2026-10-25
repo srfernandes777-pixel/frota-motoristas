@@ -66,12 +66,15 @@
 
   // ============================ comunicação com o servidor ============================
   class ApiErro extends Error { constructor(msg, rede) { super(msg); this.rede = !!rede; } }
+  // Aceita a URL mesmo com "/rest/v1/" ou espaços sobrando: usa só https://xxxx.supabase.co
+  const baseUrl = () => { try { return new URL(String(CFG.SUPABASE_URL).trim()).origin; } catch (e) { return String(CFG.SUPABASE_URL || "").trim().replace(/\/+$/, ""); } };
+  const chaveApi = () => String(CFG.SUPABASE_KEY || "").trim();
   async function rpc(fn, args) {
-    const h = { "Content-Type": "application/json", apikey: CFG.SUPABASE_KEY };
-    if ((CFG.SUPABASE_KEY || "").startsWith("eyJ")) h.Authorization = "Bearer " + CFG.SUPABASE_KEY;
+    const h = { "Content-Type": "application/json", apikey: chaveApi() };
+    if (chaveApi().startsWith("eyJ")) h.Authorization = "Bearer " + chaveApi();
     let r; const ac = new AbortController(); const to = setTimeout(() => ac.abort(), 25000);
     try {
-      r = await fetch(`${String(CFG.SUPABASE_URL).replace(/\/+$/, "")}/rest/v1/rpc/${fn}`, { method: "POST", headers: h, body: JSON.stringify(args || {}), signal: ac.signal });
+      r = await fetch(`${baseUrl()}/rest/v1/rpc/${fn}`, { method: "POST", headers: h, body: JSON.stringify(args || {}), signal: ac.signal });
     } catch (e) { throw new ApiErro("Sem conexão", true); } finally { clearTimeout(to); }
     let corpo = null; try { corpo = await r.json(); } catch (e) { /* sem corpo */ }
     if (!r.ok) throw new ApiErro((corpo && corpo.message) || ("Erro " + r.status), false);
@@ -81,10 +84,11 @@
     foto_grande: "A foto é grande demais.", nao_alteravel: "Este registro já foi aprovado ou cancelado e não pode mais ser alterado." };
   const msgErro = e => e.rede ? "Sem sinal no momento." : (MSG[e.message] || e.message);
 
-  const configPendente = () => { const u = String(CFG.SUPABASE_URL || ""), k = String(CFG.SUPABASE_KEY || ""); return !/^https?:\/\//i.test(u) || /x{5,}/i.test(u) || !k || /x{8,}/i.test(k); };
+  const configPendente = () => { const u = String(CFG.SUPABASE_URL || "").trim(), k = String(CFG.SUPABASE_KEY || "").trim(); return !/^https?:\/\//i.test(u) || /x{5,}/i.test(u) || !k || /x{8,}/i.test(k); };
   function diagnostico(e) {
     const m = String(e && e.message || "");
     if (e && e.rede) return "Não consegui falar com o servidor. Confira a URL no config.js e a internet.";
+    if (/invalid path/i.test(m)) return "A URL do config.js tem algo depois de .supabase.co. Deixe só o endereço do projeto, no formato https://xxxx.supabase.co";
     if (/PGRST202|find the function|schema cache/i.test(m)) return "O banco ainda não tem as funções do app offline. Rode o arquivo schema_v3_offline.sql no Supabase e aguarde 1 minuto.";
     if (/api key|apikey|jwt|401|403|permission/i.test(m)) return "A chave do config.js foi recusada. Use a chave PUBLICÁVEL (sb_publishable_...) do seu projeto.";
     return "Erro do servidor: " + m;
