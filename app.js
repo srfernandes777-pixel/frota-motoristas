@@ -82,7 +82,7 @@
   }
   const MSG = { sessao_invalida: "Sua sessão expirou. Entre de novo.", dados_invalidos: "O servidor não aceitou os dados. Confira os valores.",
     foto_grande: "A foto é grande demais.", nao_alteravel: "Este registro já foi aprovado ou cancelado e não pode mais ser alterado." };
-  const msgErro = e => e.rede ? "Sem sinal no momento." : (MSG[e.message] || e.message);
+  const msgErro = e => e.rede ? "Sem sinal no momento." : (MSG[e.message] || ("Erro no servidor: " + e.message));
 
   const configPendente = () => { const u = String(CFG.SUPABASE_URL || "").trim(), k = String(CFG.SUPABASE_KEY || "").trim(); return !/^https?:\/\//i.test(u) || /x{5,}/i.test(u) || !k || /x{8,}/i.test(k); };
   function diagnostico(e) {
@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, foto: null, edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "" };
+  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, foto: null, edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -148,27 +148,34 @@
     const v = S.listas && S.listas.veiculos.find(x => x.placa === placa);
     if (v && Number(odo) > Number(v.ultimo_odometro || 0)) { v.ultimo_odometro = Number(odo); await idb.put("cache", { k: "listas", v: S.listas }); }
   }
-  async function sincronizar() {
-    if (S.sync || !S.sessao || !online()) return;
+  async function sincronizar(manual) {
+    if (!S.sessao || S.sync) return;
+    if (!online()) { if (manual) { S.syncMsg = { t: "Sem sinal no momento. O envio acontece sozinho quando o sinal voltar.", c: "aviso" }; render(); } return; }
     S.sync = true;
+    let enviados = 0, falhas = 0, ultimoErro = "", semRede = false, expirou = false;
+    if (manual) { S.syncMsg = { t: "Enviando…", c: "info" }; render(); }
     try {
       const todos = await idb.all("fila");
       const meus = todos.filter(i => i.motorista === S.sessao.nome).sort((a, b) => a.registrado_em < b.registrado_em ? -1 : 1);
       for (const it of meus) {
         try {
           await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em }), p_foto: it.foto || null });
-          await idb.del("fila", it.id_cliente);
+          await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
         } catch (e) {
-          if (e.rede) break;
-          if (e.message === "sessao_invalida") { sessaoExpirada(); break; }
-          it.erro = msgErro(e); await idb.put("fila", it);
+          if (e.rede) { semRede = true; break; }
+          if (e.message === "sessao_invalida") { expirou = true; break; }
+          falhas++; ultimoErro = msgErro(e); it.erro = ultimoErro; await idb.put("fila", it);
         }
       }
-    } finally {
-      S.sync = false; S._fila = await contarFila();
-      if (["home", "meus"].includes(S.tela)) { if (S.tela === "meus") await carregarMeus(); render(); }
-    }
+    } finally { S.sync = false; S._fila = await contarFila(); }
+    if (expirou) return sessaoExpirada();
+    if (manual || falhas) {
+      S.syncMsg = semRede ? { t: "Sem sinal: não consegui enviar agora. Tento de novo sozinho.", c: "aviso" }
+        : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
+        : enviados ? { t: `✅ ${enviados} registro(s) enviado(s)!`, c: "ok" } : { t: "Não há nada para enviar.", c: "info" };
+    } else if (enviados) S.syncMsg = null;
+    if (["home", "meus"].includes(S.tela)) { if (S.tela === "meus") await carregarMeus(); render(); }
   }
 
   // ============================ foto ============================
@@ -200,8 +207,12 @@
   function barra() {
     const chip = online() ? '<span class="chip ok">● online</span>' : '<span class="chip off">● sem sinal</span>';
     const n = S.filaN;
+    const comErro = (S._fila || []).filter(i => i.motorista === S.sessao.nome && i.erro);
+    const msgEnvio = S.syncMsg ? `<div class="${S.syncMsg.c}">${esc(S.syncMsg.t)}</div>` : "";
+    const msgErroFila = comErro.length && !(S.syncMsg && S.syncMsg.c === "erro")
+      ? `<div class="erro">⚠️ ${comErro.length} registro(s) não aceito(s) pelo servidor: ${esc(comErro[0].erro)}<br>Toque em <b>Meus registros</b> para corrigir ou excluir, ou em <b>Enviar agora</b> para tentar de novo.</div>` : "";
     return `<div class="barra"><div>👤 <b>${esc(S.sessao.nome)}</b>${chip}</div><button data-act="trocar">Trocar</button></div>` +
-      (n ? `<div class="aviso">📥 ${n} registro(s) aguardando envio.${online() ? ' <button data-act="sincronizar">Enviar agora</button>' : " Serão enviados quando houver sinal."}</div>` : "");
+      (n ? `<div class="aviso">📥 ${n} registro(s) aguardando envio.${online() ? ' <button data-act="sincronizar">Enviar agora</button>' : " Serão enviados quando houver sinal."}</div>` : "") + msgEnvio + msgErroFila;
   }
   function vLogin() {
     return `<h1>🚛 Registros da Frota</h1>${S.aviso ? `<div class="aviso">${esc(S.aviso)}</div>` : ""}
@@ -313,7 +324,7 @@
     catch (e) { S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
   async function irPara(t) {
-    limparFluxo(); S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
+    limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
     S._fila = await contarFila();
     if (t === "meus") { S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados."; render(); await carregarMeus(); }
     render();
@@ -409,7 +420,7 @@
       limparSessao(); S.sessao = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
     ir(a) { irPara(a.dataset.t); },
-    sincronizar() { sincronizar(); },
+    sincronizar() { sincronizar(true); },
     async "recarregar-nomes"() { await carregarNomes(); render(); },
     foto(a) { $("#" + a.dataset.alvo).click(); },
     outro(a) { /* tratado no evento change */ },
