@@ -81,8 +81,17 @@
     foto_grande: "A foto é grande demais.", nao_alteravel: "Este registro já foi aprovado ou cancelado e não pode mais ser alterado." };
   const msgErro = e => e.rede ? "Sem sinal no momento." : (MSG[e.message] || e.message);
 
+  const configPendente = () => { const u = String(CFG.SUPABASE_URL || ""), k = String(CFG.SUPABASE_KEY || ""); return !/^https?:\/\//i.test(u) || /x{5,}/i.test(u) || !k || /x{8,}/i.test(k); };
+  function diagnostico(e) {
+    const m = String(e && e.message || "");
+    if (e && e.rede) return "Não consegui falar com o servidor. Confira a URL no config.js e a internet.";
+    if (/PGRST202|find the function|schema cache/i.test(m)) return "O banco ainda não tem as funções do app offline. Rode o arquivo schema_v3_offline.sql no Supabase e aguarde 1 minuto.";
+    if (/api key|apikey|jwt|401|403|permission/i.test(m)) return "A chave do config.js foi recusada. Use a chave PUBLICÁVEL (sb_publishable_...) do seu projeto.";
+    return "Erro do servidor: " + m;
+  }
+
   // ============================ estado ============================
-  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, foto: null, edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "" };
+  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, foto: null, edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "" };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -98,6 +107,15 @@
     const todos = await idb.all("fila");
     S.filaN = S.sessao ? todos.filter(i => i.motorista === S.sessao.nome).length : 0;
     return todos;
+  }
+  async function carregarNomes() {
+    S.erroNomes = "";
+    if (configPendente()) { S.erroNomes = "O arquivo config.js ainda não foi preenchido com a URL e a chave do seu Supabase."; return; }
+    if (!online()) { if (!S.nomes.length) S.erroNomes = "Sem sinal. Na primeira vez é preciso abrir o app com internet."; return; }
+    try {
+      const n = await rpc("app_nomes"); S.nomes = n || []; await idb.put("cache", { k: "nomes", v: S.nomes });
+      if (!S.nomes.length) S.erroNomes = "Nenhum motorista ativo foi encontrado. Cadastre os motoristas no sistema (aba Celular → Motoristas e PINs).";
+    } catch (e) { if (!S.nomes.length) S.erroNomes = diagnostico(e); }
   }
   async function atualizarListas() {
     try {
@@ -188,7 +206,9 @@
       <label class="chk"><input type="checkbox" id="lg_manter" checked> Manter conectado neste celular</label>
       <p class="peq">Desmarque se este celular for de outra pessoa ou se for emprestado.</p>
       <div id="msg"></div><button class="pri" data-act="entrar">Entrar</button>
-      ${online() ? "" : '<div class="aviso">Sem sinal. Na primeira vez é preciso entrar com internet; depois o app funciona sem sinal.</div>'}`;
+      ${S.erroNomes ? `<div class="erro">${esc(S.erroNomes)}<br><br><button data-act="recarregar-nomes">🔄 Tentar de novo</button></div>` : ""}
+      ${online() ? "" : '<div class="aviso">Sem sinal. Na primeira vez é preciso entrar com internet; depois o app funciona sem sinal.</div>'}
+      <p class="peq">Servidor: ${esc((() => { try { return new URL(CFG.SUPABASE_URL).host; } catch (e) { return "não configurado"; } })())}</p>`;
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
@@ -386,6 +406,7 @@
     },
     ir(a) { irPara(a.dataset.t); },
     sincronizar() { sincronizar(); },
+    async "recarregar-nomes"() { await carregarNomes(); render(); },
     foto(a) { $("#" + a.dataset.alvo).click(); },
     outro(a) { /* tratado no evento change */ },
     passo(a) { const el = $("#" + a.dataset.alvo); el.value = Math.max(0, Math.min(500, (parseInt(el.value, 10) || 0) + parseInt(a.dataset.d, 10))); },
@@ -437,7 +458,7 @@
       el.value = "";
     }
   });
-  window.addEventListener("online", () => { if (S.sessao) { atualizarListas(); sincronizar(); } if (["home", "meus", "login"].includes(S.tela)) render(); });
+  window.addEventListener("online", async () => { if (S.sessao) { atualizarListas(); sincronizar(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "login"].includes(S.tela)) render(); });
   window.addEventListener("offline", () => { if (["home", "meus", "login"].includes(S.tela)) render(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && S.sessao) sincronizar(); });
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
@@ -449,7 +470,7 @@
     S.sessao = lerSessao();
     if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.tela = "home"; render(); atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); }
     else render();
-    if (online()) { try { const n = await rpc("app_nomes"); S.nomes = n || []; await idb.put("cache", { k: "nomes", v: S.nomes }); if (S.tela === "login") render(); } catch (e) { /* usa o cache */ } }
+    await carregarNomes(); if (S.tela === "login") render();
   }
   window.__frota = { S, acoes, sincronizar, idb, iniciar };
   iniciar();
