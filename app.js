@@ -2,7 +2,7 @@
 (function () {
   const CFG = window.CONFIG || {};
   const TARAS = { 20: 1.8, 60: 3.5, 200: 8.5 };
-  const MAX_SALTO = 3000, DIAS_ATRAS = 7, OUTRO = "__outro__";
+  const MAX_SALTO = 3000, DIAS_ATRAS = 7, MAX_FOTOS = 5, OUTRO = "__outro__";
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, foto: null, edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null };
+  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -159,7 +159,7 @@
       const meus = todos.filter(i => i.motorista === S.sessao.nome).sort((a, b) => a.registrado_em < b.registrado_em ? -1 : 1);
       for (const it of meus) {
         try {
-          await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em }), p_foto: it.foto || null });
+          await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em }), p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
           await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
         } catch (e) {
@@ -229,12 +229,21 @@
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
       <div class="grade3"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button></div>`;
   }
+  const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
+  const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
+  function pintarFotos(pref) {
+    const prev = $("#" + pref + "_prev"); if (!prev) return;
+    const ex = fotosExistentes(), total = ex + S.fotos.length;
+    prev.innerHTML = (ex ? `<p class="peq">✔ ${ex} foto(s) enviada(s) antes serão mantidas.</p>` : "")
+      + (S.fotos.length ? `<div class="miniaturas">${S.fotos.map((f, i) => `<div class="mini"><img src="data:image/jpeg;base64,${f}"><button class="x" data-act="rm-foto" data-i="${i}" data-pref="${pref}" aria-label="Remover foto">✕</button></div>`).join("")}</div>` : "");
+    const c = $("#" + pref + "_cont"); if (c) c.textContent = `(${total}/${MAX_FOTOS})`;
+    ["cam", "gal"].forEach(k => { const bt = $("#" + pref + "_b" + k); if (bt) bt.disabled = total >= MAX_FOTOS; });
+  }
   function blocoFoto(pref, obrigatoria) {
-    const tem = S.foto || (S.edit && S.edit.fotoExistente);
-    return `<label>📷 Foto ${obrigatoria ? "do comprovante (obrigatória)" : "(opcional)"}</label>
-      <div class="linha"><button data-act="foto" data-alvo="${pref}_cam">📷 Tirar foto</button><button data-act="foto" data-alvo="${pref}_gal">🖼️ Galeria</button></div>
-      <input type="file" accept="image/*" capture="environment" id="${pref}_cam" hidden><input type="file" accept="image/*" id="${pref}_gal" hidden>
-      <div id="${pref}_prev">${S.foto ? `<img class="prev" src="data:image/jpeg;base64,${S.foto}">` : (tem ? '<p class="peq">✔ A foto enviada antes será mantida (escolha outra para trocar).</p>' : "")}</div>`;
+    return `<label>📷 Fotos ${obrigatoria ? "do comprovante (pelo menos 1)" : "(opcional)"} <span id="${pref}_cont" class="peq"></span></label>
+      <div class="linha"><button data-act="foto" data-alvo="${pref}_cam" id="${pref}_bcam">📷 Tirar foto</button><button data-act="foto" data-alvo="${pref}_gal" id="${pref}_bgal">🖼️ Galeria</button></div>
+      <input type="file" accept="image/*" capture="environment" id="${pref}_cam" hidden><input type="file" accept="image/*" multiple id="${pref}_gal" hidden>
+      <div id="${pref}_prev"></div>`;
   }
   const topo = titulo => `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>${titulo}</h2>` +
     (S.edit ? '<div class="info">✏️ Você está corrigindo um registro. Ao salvar, ele volta para conferência.</div>' : "");
@@ -258,7 +267,7 @@
     return `${topo("Confira os dados")}<div class="card"><b>Motorista:</b> ${esc(S.sessao.nome)}<br><b>Placa:</b> ${esc(r.placa)}<br><b>Combustível:</b> ${esc(r.combustivel)}<br>
       <b>Data:</b> ${brData(r.data_abast)}<br><b>Posto:</b> ${esc(r.posto)}<br><b>Valor total:</b> R$ ${num(r.valor_total)}<br><b>Valor por litro:</b> R$ ${num(r.valor_litro)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km</div>
       <div class="metr"><div><b>${num(r.litros)}</b><span>Litros</span></div><div><b>${r.km != null ? fmtInt(r.km) : "—"}</b><span>Km rodados</span></div><div><b>${r.consumo != null ? num(r.consumo, 1) : "—"}</b><span>Km/L</span></div></div>
-      ${S.foto ? `<img class="prev" src="data:image/jpeg;base64,${S.foto}">` : ""}${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
+      ${miniaturas(S.fotos)}${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que os dados conferem com o comprovante</label><div id="msg"></div>
       <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar">${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
   }
@@ -281,7 +290,7 @@
     return `${topo("Confira a coleta")}<div class="card"><b>Motorista:</b> ${esc(S.sessao.nome)}<br><b>Placa:</b> ${esc(r.placa)}<br><b>Cliente:</b> ${esc(r.cliente || "—")}<br><b>Data:</b> ${brData(r.data_coleta)}</div>
       <div class="metr"><div><b>${r.qtd_20}</b><span>20 L</span></div><div><b>${r.qtd_60}</b><span>60 L</span></div><div><b>${r.qtd_200}</b><span>200 L</span></div></div>
       <div class="metr"><div><b>${fmtDec(r.tara)} kg</b><span>Tara</span></div><div><b>${r.peso_bruto ? fmtDec(r.peso_bruto) + " kg" : "—"}</b><span>Peso bruto</span></div><div><b>${r.peso_bruto ? fmtDec(r.peso_bruto - r.tara) + " kg" : "—"}</b><span>Peso líquido</span></div></div>
-      ${r.observacoes ? `<p><b>Observações:</b> ${esc(r.observacoes)}</p>` : ""}${S.foto ? `<img class="prev" src="data:image/jpeg;base64,${S.foto}">` : ""}
+      ${r.observacoes ? `<p><b>Observações:</b> ${esc(r.observacoes)}</p>` : ""}${miniaturas(S.fotos)}
       ${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que as quantidades estão corretas</label><div id="msg"></div>
       <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar">${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
@@ -313,12 +322,12 @@
     const v = { login: vLogin, home: vHome, meus: vMeus }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk) : vHome);
-    app().innerHTML = v(); aplicarMascaras(app());
+    app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co"].forEach(pintarFotos);
   }
   const msg = (html, tipo) => { const m = $("#msg"); if (m) m.innerHTML = html ? `<div class="${tipo || "erro"}">${html}</div>` : ""; };
 
   // ============================ ações ============================
-  function limparFluxo() { S.rasc = null; S.foto = null; S.edit = null; S.fase = "form"; S.okMsg = ""; }
+  function limparFluxo() { S.rasc = null; S.fotos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
   async function carregarMeus() {
     try { S.meus = await rpc("app_meus", { p_token: token() }); S.meusErro = ""; }
     catch (e) { S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
@@ -340,7 +349,7 @@
     if (!total || total <= 0) erros.push("Informe o valor total pago.");
     if (!litro || litro < 2 || litro > 20) erros.push("Valor por litro inválido (esperado entre R$ 2,00 e R$ 20,00).");
     if (!odo) erros.push("Informe o odômetro.");
-    if (!S.foto && !(S.edit && S.edit.fotoExistente)) erros.push("Tire a foto do comprovante (ou escolha da galeria).");
+    if (S.fotos.length + fotosExistentes() === 0) erros.push("Tire pelo menos 1 foto do comprovante (ou escolha da galeria).");
     let litros = null, km = null, consumo = null, odoMsg = null;
     if (!erros.length) {
       litros = round2(total / litro);
@@ -388,11 +397,11 @@
     const tipo = S.tipo, r = S.rasc;
     try {
       if (S.edit && S.edit.origem === "servidor") {
-        await rpc("app_corrigir", { p_token: token(), p_tabela: tipo, p_id: S.edit.id, p_reg: payload(tipo, r), p_foto: S.foto || null });
+        await rpc("app_corrigir", { p_token: token(), p_tabela: tipo, p_id: S.edit.id, p_reg: payload(tipo, r), p_foto: null, p_fotos: S.fotos });
         S.okMsg = "✅ Correção enviada!";
       } else {
         const id = S.edit && S.edit.origem === "fila" ? S.edit.id : uuid();
-        await idb.put("fila", { id_cliente: id, tipo, motorista: S.sessao.nome, registrado_em: (S.edit && S.edit.registrado_em) || new Date().toISOString(), reg: payload(tipo, r), foto: S.foto || null, erro: null });
+        await idb.put("fila", { id_cliente: id, tipo, motorista: S.sessao.nome, registrado_em: (S.edit && S.edit.registrado_em) || new Date().toISOString(), reg: payload(tipo, r), fotos: S.fotos.slice(), erro: null });
         S._fila = await contarFila(); await sincronizar();
         const ainda = await idb.get("fila", id);
         S.okMsg = ainda ? "📥 Salvo no celular! Será enviado automaticamente quando houver sinal." : "✅ Enviado!";
@@ -400,7 +409,7 @@
       S.fase = "ok"; S._fila = await contarFila(); render();
     } catch (e) { btn.disabled = false; msg(esc(msgErro(e)) + (e.rede ? " A correção de um registro já enviado precisa de internet." : "")); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
-  function abrirEdicao(tipo, r, edit, foto) { limparFluxo(); S.tela = tipo; S.tipo = tipo; S.rasc = r; S.edit = edit; S.foto = foto || null; S.fase = "form"; render(); }
+  function abrirEdicao(tipo, r, edit, fotos) { limparFluxo(); S.tela = tipo; S.tipo = tipo; S.rasc = r; S.edit = edit; S.fotos = fotos || []; S.fase = "form"; render(); }
 
   const acoes = {
     async entrar() {
@@ -436,10 +445,11 @@
       S.rasc = rasc; S.fase = "confirmar"; render();
     },
     "voltar-form"() { S.fase = "form"; render(); },
+    "rm-foto"(a) { S.fotos.splice(Number(a.dataset.i), 1); pintarFotos(a.dataset.pref); msg(""); },
     salvar() { salvar(); },
     async "corrigir-fila"(a) {
       const it = (await idb.get("fila", a.dataset.id)); if (!it) return;
-      abrirEdicao(it.tipo, Object.assign({}, it.reg), { origem: "fila", id: it.id_cliente, registrado_em: it.registrado_em }, it.foto);
+      abrirEdicao(it.tipo, Object.assign({}, it.reg), { origem: "fila", id: it.id_cliente, registrado_em: it.registrado_em }, it.fotos || (it.foto ? [it.foto] : []));
     },
     async "excluir-fila"(a) {
       if (!confirm("Excluir este registro do celular? Ele não será enviado.")) return;
@@ -450,7 +460,7 @@
       const base = a.dataset.t === "abast"
         ? { placa: r.placa, combustivel: r.combustivel, data_abast: r.data_abast, posto: r.posto, valor_total: Number(r.valor_total), valor_litro: Number(r.valor_litro), odometro: Number(r.odometro) }
         : { placa: r.placa, cliente: r.cliente, data_coleta: r.data_coleta, qtd_20: r.qtd_20, qtd_60: r.qtd_60, qtd_200: r.qtd_200, peso_bruto: Number(r.peso_bruto), observacoes: r.observacoes };
-      abrirEdicao(a.dataset.t, base, { origem: "servidor", id: Number(r.id), fotoExistente: !!r.foto_path });
+      abrirEdicao(a.dataset.t, base, { origem: "servidor", id: Number(r.id), fotosExistentes: (r.fotos && r.fotos.length) || (r.foto_path ? 1 : 0) });
     },
     async "cancelar-srv"(a) {
       if (!confirm("Cancelar este registro?")) return;
@@ -466,10 +476,14 @@
   document.addEventListener("change", async ev => {
     const el = ev.target;
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
-    if (el.type === "file" && el.files && el.files[0]) {
-      const pref = el.id.split("_")[0], alvo = $("#" + pref + "_prev");
-      try { S.foto = await processarFoto(el.files[0]); alvo.innerHTML = `<img class="prev" src="data:image/jpeg;base64,${S.foto}">`; msg(""); }
-      catch (e) { msg(esc(e.message)); }
+    if (el.type === "file" && el.files && el.files.length) {
+      const pref = el.id.split("_")[0]; let ignoradas = 0, erro = "";
+      for (const f of Array.from(el.files)) {
+        if (fotosExistentes() + S.fotos.length >= MAX_FOTOS) { ignoradas++; continue; }
+        try { S.fotos.push(await processarFoto(f)); } catch (e) { erro = e.message; }
+      }
+      pintarFotos(pref);
+      if (erro) msg(esc(erro)); else if (ignoradas) msg(`Limite de ${MAX_FOTOS} fotos por registro: ${ignoradas} não foram adicionadas.`, "aviso"); else msg("");
       el.value = "";
     }
   });
