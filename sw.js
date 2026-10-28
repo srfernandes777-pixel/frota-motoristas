@@ -1,5 +1,5 @@
 // Guarda o app no celular para abrir sem internet. Para forçar atualização em todos os celulares, mude a versão.
-const VERSAO = "frota-v4";
+const VERSAO = "frota-v5";
 const ARQUIVOS = ["./", "./index.html", "./app.js", "./config.js", "./manifest.webmanifest",
                   "./icon-192.png", "./icon-512.png", "./icon-maskable-512.png"];
 

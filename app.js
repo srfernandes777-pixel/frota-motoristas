@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null };
+  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -129,6 +129,10 @@
       if (!e.rede && e.message === "sessao_invalida") { sessaoExpirada(); return false; }
       const c = await idb.get("cache", "listas"); if (c) S.listas = c.v;
     }
+    try {  // localizações aprovadas dos clientes (sem sinal, ou banco ainda sem a função: fica o que já está guardado)
+      const lo = await rpc("app_locais", { p_token: token() });
+      S.locais = Object.fromEntries((lo || []).map(x => [x.nome, x])); await idb.put("cache", { k: "locais", v: S.locais });
+    } catch (e) { /* mantém o cache */ }
     return true;
   }
   function sessaoExpirada() {
@@ -159,7 +163,9 @@
       const meus = todos.filter(i => i.motorista === S.sessao.nome).sort((a, b) => a.registrado_em < b.registrado_em ? -1 : 1);
       for (const it of meus) {
         try {
-          await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em }), p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
+          const regEnv = Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em });
+          if (it.tipo === "local") await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
+          else await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: regEnv, p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
           await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
         } catch (e) {
@@ -196,6 +202,47 @@
     }
   }
 
+  // ============================ localização (GPS) ============================
+  const LOC_PREC_MAX = 60;  // metros: pior que isso, pede para tentar de novo
+  const round6 = v => Math.round(v * 1e6) / 1e6;
+  const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  // Fica até 20 s ouvindo o GPS e guarda a melhor leitura (a primeira costuma ser imprecisa).
+  function posicao(ms, alvo) {
+    return new Promise((res, rej) => {
+      if (!navigator.geolocation) return rej(new Error("Este aparelho não oferece localização para o navegador."));
+      let melhor = null, fim = false, id = null, t = null;
+      const fechar = erro => {
+        if (fim) return; fim = true; navigator.geolocation.clearWatch(id); clearTimeout(t);
+        if (erro) rej(erro); else if (melhor) res(melhor); else rej(new Error("Não consegui achar o GPS. Vá para um local aberto e tente de novo."));
+      };
+      id = navigator.geolocation.watchPosition(p => { if (!melhor || p.coords.accuracy < melhor.accuracy) melhor = p.coords; if (melhor.accuracy <= alvo) fechar(); },
+        e => { if (e.code === 1) fechar(new Error("A localização está bloqueada. Permita a localização para este app nas configurações do celular/navegador.")); },
+        { enableHighAccuracy: true, maximumAge: 0, timeout: ms });
+      t = setTimeout(() => fechar(), ms);
+    });
+  }
+  async function marcarLocal(nome) {
+    const c = await posicao(20000, 15), prec = Math.round(c.accuracy);
+    if (prec > LOC_PREC_MAX) throw new Error(`O GPS está com pouca precisão (${prec} m). Vá para um local aberto, sem teto por cima, e tente de novo.`);
+    await idb.put("fila", { id_cliente: uuid(), tipo: "local", motorista: S.sessao.nome, registrado_em: new Date().toISOString(),
+      reg: { cliente: nome, latitude: round6(c.latitude), longitude: round6(c.longitude), precisao_m: prec }, fotos: [], erro: null });
+    S._fila = await contarFila(); sincronizar();
+    return prec;
+  }
+  async function acaoMarcar(nome, btn, alvo) {
+    nome = String(nome || "").trim();
+    const out = (h, tp) => { if (alvo) alvo.innerHTML = h ? `<div class="${tp || "erro"}">${h}</div>` : ""; };
+    if (!nome) return out("Escolha ou digite o nome do cliente primeiro.");
+    if (!confirm(`Você está no local de "${nome}"? A posição de agora será enviada para conferência.`)) return;
+    const txt = btn.textContent; btn.disabled = true; btn.textContent = "📡 Buscando GPS…";
+    out("📡 Buscando o sinal de GPS. Pode levar até 20 segundos: fique parado.", "info");
+    try {
+      const prec = await marcarLocal(nome);
+      out(`✅ Localização de ${esc(nome)} guardada (precisão ${prec} m).${online() ? "" : " Será enviada quando houver sinal."}`, "ok");
+    } catch (e) { out(esc(e.message)); }
+    finally { btn.disabled = false; btn.textContent = txt; }
+  }
+
   // ============================ telas ============================
   const opts = (lista, atual, vazio) => (vazio ? `<option value="">${vazio}</option>` : "") + lista.map(x => `<option value="${esc(x)}" ${x === atual ? "selected" : ""}>${esc(x)}</option>`).join("");
   const optsPlaca = atual => '<option value="">— selecione —</option>' + ((S.listas && S.listas.veiculos) || []).map(v => `<option value="${esc(v.placa)}" ${v.placa === atual ? "selected" : ""}>${esc(v.placa)} — ${esc(v.tipo || "")}</option>`).join("");
@@ -227,7 +274,7 @@
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
-      <div class="grade3"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button></div>`;
+      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button></div>`;
   }
   const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
   const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
@@ -279,6 +326,7 @@
     return `${topo("📦 Coleta")}
       <label>Placa do veículo</label><select id="co_placa">${optsPlaca(r.placa)}</select>
       ${seletorOutro("co_cli", "Cliente / local da coleta (opcional)", L.clientes || [], r.cliente, "Nome do cliente")}
+      <button data-act="marcar-coleta" style="margin-top:.6rem">📍 Marcar localização deste cliente</button><div id="msg_loc"></div><p class="peq">Toque só quando estiver no local do cliente.</p>
       <label>Data da coleta</label><input type="date" id="co_data" value="${r.data_coleta || hoje()}" min="${minimo}" max="${hoje()}">
       <h2>📥 Bombonas coletadas (com resíduo)</h2>${passo("co_q20", "Bombonas de 20 L", r.qtd_20)}${passo("co_q60", "Bombonas de 60 L", r.qtd_60)}${passo("co_q200", "Bombonas de 200 L", r.qtd_200)}
       <h2>📤 Bombonas entregues (vazias, deixadas no cliente)</h2><p class="peq">Deixe em 0 se não deixou nenhuma.</p>${passo("co_e20", "Bombonas de 20 L", r.qtd_ent_20)}${passo("co_e60", "Bombonas de 60 L", r.qtd_ent_60)}${passo("co_e200", "Bombonas de 200 L", r.qtd_ent_200)}
@@ -303,14 +351,32 @@
   }
   const STATUS = { pendente: "🟡 Aguardando conferência", aprovado: "🟢 Aprovado", rejeitado: "🔴 Devolvido para correção", cancelado: "⚫ Cancelado" };
   function resumo(tipo, r) {
+    if (tipo === "local") return `<b>📍 Localização</b><br>${esc(r.cliente)} · precisão ${esc(r.precisao_m)} m`;
     return tipo === "abast"
       ? `<b>⛽ Abastecimento</b> · ${brData(r.data_abast)}<br>${esc(r.placa)} · ${esc(r.combustivel)} · R$ ${num(r.valor_total)} · odômetro ${fmtInt(r.odometro)}`
       : `<b>📦 Coleta</b> · ${brData(r.data_coleta)}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>Coletou: 20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}${(r.qtd_ent_20 || 0) + (r.qtd_ent_60 || 0) + (r.qtd_ent_200 || 0) ? `<br>Deixou: 20 L × ${r.qtd_ent_20 || 0} · 60 L × ${r.qtd_ent_60 || 0} · 200 L × ${r.qtd_ent_200 || 0}` : ""}`;
   }
+  const mapsUrl = l => `https://www.google.com/maps/dir/?api=1&destination=${l.latitude},${l.longitude}`;
+  const wazeUrl = l => `https://waze.com/ul?ll=${l.latitude},${l.longitude}&navigate=yes`;
+  function vClientes() {
+    const nomes = ((S.listas && S.listas.clientes) || []).slice().sort((a, b) => a.localeCompare(b, "pt-BR"));
+    const cartoes = nomes.map(n => {
+      const l = S.locais[n];
+      return `<div class="card cli" data-b="${esc(semAcento(n))}"><b>${esc(n)}</b>${l ? '<span class="chip ok">📍 localizado</span>' : '<span class="chip off">sem localização</span>'}
+        ${l ? `<div class="linha" style="margin-top:.5rem"><a class="btn pri" href="${mapsUrl(l)}" target="_blank" rel="noopener">🧭 Google Maps</a><a class="btn" href="${wazeUrl(l)}" target="_blank" rel="noopener">Waze</a></div>` : ""}
+        <button data-act="marcar-cli" data-n="${esc(n)}" style="margin-top:.5rem">📍 ${l ? "Atualizar" : "Marcar"} localização aqui</button><div class="mloc"></div></div>`;
+    }).join("");
+    return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>🧭 Clientes</h2>
+      <input id="cl_busca" type="search" placeholder="🔎 Buscar cliente" autocomplete="off">
+      ${cartoes || '<p class="peq">Nenhum cliente na lista ainda. Use o campo abaixo para marcar o primeiro.</p>'}
+      <h2>➕ Cliente novo</h2><p class="peq">Está no local de um cliente que ainda não está na lista? Digite o nome e marque.</p>
+      <input id="cl_novo" placeholder="Nome do cliente" autocomplete="off"><button data-act="marcar-novo" style="margin-top:.5rem">📍 Marcar localização aqui</button><div id="cl_novo_msg"></div>
+      <p class="peq">O escritório confere a localização antes de ela valer para todos. O GPS só é lido quando você toca no botão.</p>`;
+  }
   function vMeus() {
     const fila = (S._fila || []).filter(i => i.motorista === S.sessao.nome);
     const locais = fila.map(i => `<div class="card">${resumo(i.tipo, i.reg)}<div class="st">📥 Aguardando envio</div>${i.erro ? `<div class="erro">${esc(i.erro)}</div>` : ""}
-      <div class="linha"><button data-act="corrigir-fila" data-id="${i.id_cliente}">✏️ Corrigir</button><button class="perigo" data-act="excluir-fila" data-id="${i.id_cliente}">🗑️ Excluir</button></div></div>`).join("");
+      <div class="linha">${i.tipo === "local" ? "" : `<button data-act="corrigir-fila" data-id="${i.id_cliente}">✏️ Corrigir</button>`}<button class="perigo" data-act="excluir-fila" data-id="${i.id_cliente}">🗑️ Excluir</button></div></div>`).join("");
     let servidor;
     if (S.meus == null) servidor = `<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
     else if (!S.meus.length) servidor = '<p class="peq">Nenhum registro enviado nos últimos 30 dias.</p>';
@@ -321,7 +387,7 @@
   }
 
   function render() {
-    const v = { login: vLogin, home: vHome, meus: vMeus }[S.tela]
+    const v = { login: vLogin, home: vHome, meus: vMeus, clientes: vClientes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk) : vHome);
     app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co"].forEach(pintarFotos);
@@ -432,6 +498,9 @@
       limparSessao(); S.sessao = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
     ir(a) { irPara(a.dataset.t); },
+    "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },
+    "marcar-novo"(a) { return acaoMarcar($("#cl_novo").value, a, $("#cl_novo_msg")); },
+    "marcar-coleta"(a) { const sel = $("#co_cli").value; return acaoMarcar(sel === OUTRO ? $("#co_cli_txt").value : sel, a, $("#msg_loc")); },
     sincronizar() { sincronizar(true); },
     async "recarregar-nomes"() { await carregarNomes(); render(); },
     foto(a) { $("#" + a.dataset.alvo).click(); },
@@ -476,6 +545,11 @@
     const a = ev.target.closest("[data-act]"); if (!a || a.tagName === "SELECT") return;
     ev.preventDefault(); const f = acoes[a.dataset.act]; if (f) f(a);
   });
+  document.addEventListener("input", ev => {
+    if (ev.target.id !== "cl_busca") return;
+    const q = semAcento(ev.target.value.trim());
+    document.querySelectorAll(".card.cli").forEach(c => { c.style.display = !q || c.dataset.b.includes(q) ? "" : "none"; });
+  });
   document.addEventListener("change", async ev => {
     const el = ev.target;
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
@@ -499,6 +573,7 @@
   async function iniciar() {
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => { });
     const c = await idb.get("cache", "nomes"); S.nomes = c ? c.v : [];
+    const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
     S.sessao = lerSessao();
     if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.tela = "home"; render(); atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); }
     else render();
