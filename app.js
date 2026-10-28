@@ -280,19 +280,21 @@
       <label>Placa do veículo</label><select id="co_placa">${optsPlaca(r.placa)}</select>
       ${seletorOutro("co_cli", "Cliente / local da coleta (opcional)", L.clientes || [], r.cliente, "Nome do cliente")}
       <label>Data da coleta</label><input type="date" id="co_data" value="${r.data_coleta || hoje()}" min="${minimo}" max="${hoje()}">
-      <h2>Quantidade de bombonas</h2>${passo("co_q20", "Bombonas de 20 L", r.qtd_20)}${passo("co_q60", "Bombonas de 60 L", r.qtd_60)}${passo("co_q200", "Bombonas de 200 L", r.qtd_200)}
-      <label>Peso na balança (kg) — se já pesou</label><input id="co_peso" data-mask="dec" placeholder="Ex.: 245,5" value="${r.peso_bruto ? fmtDec(r.peso_bruto) : ""}">
+      <h2>📥 Bombonas coletadas (com resíduo)</h2>${passo("co_q20", "Bombonas de 20 L", r.qtd_20)}${passo("co_q60", "Bombonas de 60 L", r.qtd_60)}${passo("co_q200", "Bombonas de 200 L", r.qtd_200)}
+      <h2>📤 Bombonas entregues (vazias, deixadas no cliente)</h2><p class="peq">Deixe em 0 se não deixou nenhuma.</p>${passo("co_e20", "Bombonas de 20 L", r.qtd_ent_20)}${passo("co_e60", "Bombonas de 60 L", r.qtd_ent_60)}${passo("co_e200", "Bombonas de 200 L", r.qtd_ent_200)}
+      <label>Peso na balança (kg) — só das coletadas, se já pesou</label><input id="co_peso" data-mask="dec" placeholder="Ex.: 245,5" value="${r.peso_bruto ? fmtDec(r.peso_bruto) : ""}">
       <label>Observações (opcional)</label><textarea id="co_obs" maxlength="300" placeholder="Ex.: cliente pediu retorno na sexta, bombona danificada...">${esc(r.observacoes || "")}</textarea>
       ${blocoFoto("co", false)}<div id="msg"></div><button class="pri" data-act="validar-coleta" style="margin-top:1rem">Continuar</button>`;
   }
   function vConfColeta() {
     const r = S.rasc;
     return `${topo("Confira a coleta")}<div class="card"><b>Motorista:</b> ${esc(S.sessao.nome)}<br><b>Placa:</b> ${esc(r.placa)}<br><b>Cliente:</b> ${esc(r.cliente || "—")}<br><b>Data:</b> ${brData(r.data_coleta)}</div>
-      <div class="metr"><div><b>${r.qtd_20}</b><span>20 L</span></div><div><b>${r.qtd_60}</b><span>60 L</span></div><div><b>${r.qtd_200}</b><span>200 L</span></div></div>
+      <p class="peq"><b>📥 Coletadas (com resíduo)</b></p><div class="metr"><div><b>${r.qtd_20}</b><span>20 L</span></div><div><b>${r.qtd_60}</b><span>60 L</span></div><div><b>${r.qtd_200}</b><span>200 L</span></div></div>
+      <p class="peq"><b>📤 Entregues (vazias)</b></p><div class="metr"><div><b>${r.qtd_ent_20}</b><span>20 L</span></div><div><b>${r.qtd_ent_60}</b><span>60 L</span></div><div><b>${r.qtd_ent_200}</b><span>200 L</span></div></div>
       <div class="metr"><div><b>${fmtDec(r.tara)} kg</b><span>Tara</span></div><div><b>${r.peso_bruto ? fmtDec(r.peso_bruto) + " kg" : "—"}</b><span>Peso bruto</span></div><div><b>${r.peso_bruto ? fmtDec(r.peso_bruto - r.tara) + " kg" : "—"}</b><span>Peso líquido</span></div></div>
       ${r.observacoes ? `<p><b>Observações:</b> ${esc(r.observacoes)}</p>` : ""}${miniaturas(S.fotos)}
       ${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
-      <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que as quantidades estão corretas</label><div id="msg"></div>
+      <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que as quantidades coletadas e entregues estão corretas</label><div id="msg"></div>
       <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar">${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
   }
   function vOk() {
@@ -303,7 +305,7 @@
   function resumo(tipo, r) {
     return tipo === "abast"
       ? `<b>⛽ Abastecimento</b> · ${brData(r.data_abast)}<br>${esc(r.placa)} · ${esc(r.combustivel)} · R$ ${num(r.valor_total)} · odômetro ${fmtInt(r.odometro)}`
-      : `<b>📦 Coleta</b> · ${brData(r.data_coleta)}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}`;
+      : `<b>📦 Coleta</b> · ${brData(r.data_coleta)}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>Coletou: 20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}${(r.qtd_ent_20 || 0) + (r.qtd_ent_60 || 0) + (r.qtd_ent_200 || 0) ? `<br>Deixou: 20 L × ${r.qtd_ent_20 || 0} · 60 L × ${r.qtd_ent_60 || 0} · 200 L × ${r.qtd_ent_200 || 0}` : ""}`;
   }
   function vMeus() {
     const fila = (S._fila || []).filter(i => i.motorista === S.sessao.nome);
@@ -376,20 +378,21 @@
     const placa = g("co_placa").value, data = g("co_data").value;
     const sel = g("co_cli").value, cliente = sel === OUTRO ? g("co_cli_txt").value.trim() : sel;
     const q = { 20: parseInt(g("co_q20").value, 10) || 0, 60: parseInt(g("co_q60").value, 10) || 0, 200: parseInt(g("co_q200").value, 10) || 0 };
+    const e = { 20: parseInt(g("co_e20").value, 10) || 0, 60: parseInt(g("co_e60").value, 10) || 0, 200: parseInt(g("co_e200").value, 10) || 0 };
     const pesoTxt = g("co_peso").value.trim(); let peso = 0;
     if (!placa) erros.push("Selecione a placa."); if (!data) erros.push("Informe a data.");
-    if (q[20] + q[60] + q[200] === 0) erros.push("Informe a quantidade de ao menos um tipo de bombona.");
-    if (Object.values(q).some(v => v < 0 || v > 500)) erros.push("Quantidade de bombonas inválida.");
+    if (q[20] + q[60] + q[200] + e[20] + e[60] + e[200] === 0) erros.push("Informe ao menos uma bombona coletada ou entregue.");
+    if ([...Object.values(q), ...Object.values(e)].some(v => v < 0 || v > 500)) erros.push("Quantidade de bombonas inválida.");
     if (pesoTxt) { peso = parseNum(pesoTxt); if (!peso || peso <= 0) { erros.push("Peso inválido. Digite só números (ex.: 245,5) ou deixe em branco."); peso = 0; } }
     const tara = round2(q[20] * TARAS[20] + q[60] * TARAS[60] + q[200] * TARAS[200]);
     if (peso && peso < tara) erros.push(`O peso na balança (${fmtDec(peso)} kg) é menor que a tara das bombonas (${fmtDec(tara)} kg). Confira os números.`);
-    [[20, 40], [60, 25], [200, 10]].forEach(([k, lim]) => { if (q[k] > lim) alertas.push(`${q[k]} bombonas de ${k} L é bastante. Confira a quantidade.`); });
+    [[20, 40], [60, 25], [200, 10]].forEach(([k, lim]) => { if (q[k] > lim) alertas.push(`${q[k]} bombonas de ${k} L coletadas é bastante. Confira a quantidade.`); if (e[k] > lim) alertas.push(`${e[k]} bombonas de ${k} L entregues é bastante. Confira a quantidade.`); });
     if (sel === OUTRO && cliente && !(S.listas.clientes || []).includes(cliente)) alertas.push("Cliente novo (não está na lista): " + cliente);
-    return { erros, rasc: { placa, cliente: cliente || null, data_coleta: data, qtd_20: q[20], qtd_60: q[60], qtd_200: q[200], peso_bruto: peso, tara, observacoes: g("co_obs").value.trim() || null, alertas } };
+    return { erros, rasc: { placa, cliente: cliente || null, data_coleta: data, qtd_20: q[20], qtd_60: q[60], qtd_200: q[200], qtd_ent_20: e[20], qtd_ent_60: e[60], qtd_ent_200: e[200], peso_bruto: peso, tara, observacoes: g("co_obs").value.trim() || null, alertas } };
   }
   const payload = (tipo, r) => tipo === "abast"
     ? { placa: r.placa, combustivel: r.combustivel, data_abast: r.data_abast, posto: r.posto, valor_total: r.valor_total, valor_litro: r.valor_litro, odometro: r.odometro }
-    : { placa: r.placa, cliente: r.cliente, data_coleta: r.data_coleta, qtd_20: r.qtd_20, qtd_60: r.qtd_60, qtd_200: r.qtd_200, peso_bruto: r.peso_bruto, observacoes: r.observacoes };
+    : { placa: r.placa, cliente: r.cliente, data_coleta: r.data_coleta, qtd_20: r.qtd_20, qtd_60: r.qtd_60, qtd_200: r.qtd_200, qtd_ent_20: r.qtd_ent_20 || 0, qtd_ent_60: r.qtd_ent_60 || 0, qtd_ent_200: r.qtd_ent_200 || 0, peso_bruto: r.peso_bruto, observacoes: r.observacoes };
 
   async function salvar() {
     if (!$("#cf_ok").checked) return msg("Marque a confirmação para continuar.");
@@ -459,7 +462,7 @@
       const r = (S.meus || []).find(x => String(x.id) === a.dataset.id && x._tipo === a.dataset.t); if (!r) return;
       const base = a.dataset.t === "abast"
         ? { placa: r.placa, combustivel: r.combustivel, data_abast: r.data_abast, posto: r.posto, valor_total: Number(r.valor_total), valor_litro: Number(r.valor_litro), odometro: Number(r.odometro) }
-        : { placa: r.placa, cliente: r.cliente, data_coleta: r.data_coleta, qtd_20: r.qtd_20, qtd_60: r.qtd_60, qtd_200: r.qtd_200, peso_bruto: Number(r.peso_bruto), observacoes: r.observacoes };
+        : { placa: r.placa, cliente: r.cliente, data_coleta: r.data_coleta, qtd_20: r.qtd_20, qtd_60: r.qtd_60, qtd_200: r.qtd_200, qtd_ent_20: r.qtd_ent_20 || 0, qtd_ent_60: r.qtd_ent_60 || 0, qtd_ent_200: r.qtd_ent_200 || 0, peso_bruto: Number(r.peso_bruto), observacoes: r.observacoes };
       abrirEdicao(a.dataset.t, base, { origem: "servidor", id: Number(r.id), fotosExistentes: (r.fotos && r.fotos.length) || (r.foto_path ? 1 : 0) });
     },
     async "cancelar-srv"(a) {
