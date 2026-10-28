@@ -326,6 +326,7 @@
     return `${topo("📦 Coleta")}
       <label>Placa do veículo</label><select id="co_placa">${optsPlaca(r.placa)}</select>
       ${seletorOutro("co_cli", "Cliente / local da coleta (opcional)", L.clientes || [], r.cliente, "Nome do cliente")}
+      <div id="nav_cli">${navCliente(r.cliente)}</div>
       <button data-act="marcar-coleta" style="margin-top:.6rem">📍 Marcar localização deste cliente</button><div id="msg_loc"></div><p class="peq">Toque só quando estiver no local do cliente.</p>
       <label>Data da coleta</label><input type="date" id="co_data" value="${r.data_coleta || hoje()}" min="${minimo}" max="${hoje()}">
       <h2>📥 Bombonas coletadas (com resíduo)</h2>${passo("co_q20", "Bombonas de 20 L", r.qtd_20)}${passo("co_q60", "Bombonas de 60 L", r.qtd_60)}${passo("co_q200", "Bombonas de 200 L", r.qtd_200)}
@@ -358,6 +359,14 @@
   }
   const mapsUrl = l => `https://www.google.com/maps/dir/?api=1&destination=${l.latitude},${l.longitude}`;
   const wazeUrl = l => `https://waze.com/ul?ll=${l.latitude},${l.longitude}&navigate=yes`;
+  function navCliente(nome) {
+    const l = S.locais && S.locais[String(nome || "").trim()];
+    return l ? `<div class="linha" style="margin-top:.5rem"><a class="btn pri" href="${mapsUrl(l)}" target="_blank" rel="noopener">🧭 Como chegar</a><a class="btn" href="${wazeUrl(l)}" target="_blank" rel="noopener">Waze</a></div>` : "";
+  }
+  function atualizarNav() {
+    const n = $("#nav_cli"), sel = $("#co_cli"); if (!n || !sel) return;
+    n.innerHTML = navCliente(sel.value === OUTRO ? $("#co_cli_txt").value : sel.value);
+  }
   function vClientes() {
     const nomes = ((S.listas && S.listas.clientes) || []).slice().sort((a, b) => a.localeCompare(b, "pt-BR"));
     const cartoes = nomes.map(n => {
@@ -546,6 +555,7 @@
     ev.preventDefault(); const f = acoes[a.dataset.act]; if (f) f(a);
   });
   document.addEventListener("input", ev => {
+    if (ev.target.id === "co_cli_txt") return atualizarNav();
     if (ev.target.id !== "cl_busca") return;
     const q = semAcento(ev.target.value.trim());
     document.querySelectorAll(".card.cli").forEach(c => { c.style.display = !q || c.dataset.b.includes(q) ? "" : "none"; });
@@ -553,6 +563,7 @@
   document.addEventListener("change", async ev => {
     const el = ev.target;
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
+    if (el.id === "co_cli") atualizarNav();
     if (el.type === "file" && el.files && el.files.length) {
       const pref = el.id.split("_")[0]; let ignoradas = 0, erro = "";
       for (const f of Array.from(el.files)) {
