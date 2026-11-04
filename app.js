@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
+  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -164,9 +164,9 @@
       for (const it of meus) {
         try {
           const regEnv = Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em });
-          if (it.tipo === "local") await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
-          else await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: regEnv, p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
-          await idb.del("fila", it.id_cliente); enviados++;
+          let resp; if (it.tipo === "local") resp = await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
+          else resp = await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: regEnv, p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
+          S.protocolos[it.id_cliente] = resp && resp.id != null ? resp.id : "dup"; await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
         } catch (e) {
           if (e.rede) { semRede = true; break; }
@@ -176,6 +176,7 @@
       }
     } finally { S.sync = false; S._fila = await contarFila(); }
     if (expirou) return sessaoExpirada();
+    if (S.fase === "ok" && S.okIdc && S.protocolos[S.okIdc] !== undefined) { S.okNum = S.protocolos[S.okIdc]; S.okIdc = null; S.okErro = ""; render(); }
     if (manual || falhas) {
       S.syncMsg = semRede ? { t: "Sem sinal: não consegui enviar agora. Tento de novo sozinho.", c: "aviso" }
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
@@ -274,7 +275,7 @@
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
-      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button></div>`;
+      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
   }
   const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
   const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
@@ -316,7 +317,7 @@
       <div class="metr"><div><b>${num(r.litros)}</b><span>Litros</span></div><div><b>${r.km != null ? fmtInt(r.km) : "—"}</b><span>Km rodados</span></div><div><b>${r.consumo != null ? num(r.consumo, 1) : "—"}</b><span>Km/L</span></div></div>
       ${miniaturas(S.fotos)}${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que os dados conferem com o comprovante</label><div id="msg"></div>
-      <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar">${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
+      <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar" disabled>${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
   }
   const passo = (id, rotulo, v) => `<label>${rotulo}</label><div class="passo"><button data-act="passo" data-alvo="${id}" data-d="-1">−</button><input id="${id}" type="number" inputmode="numeric" min="0" max="500" value="${v || 0}"><button data-act="passo" data-alvo="${id}" data-d="1">+</button></div>`;
   function vColeta() {
@@ -344,10 +345,16 @@
       ${r.observacoes ? `<p><b>Observações:</b> ${esc(r.observacoes)}</p>` : ""}${miniaturas(S.fotos)}
       ${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que as quantidades coletadas e entregues estão corretas</label><div id="msg"></div>
-      <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar">${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
+      <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar" disabled>${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
   }
   function vOk() {
-    return `${barra()}<div class="ok" style="font-size:1.1rem">${esc(S.okMsg)}</div><p class="peq">Errou algo? Em <b>Meus registros</b> você corrige ou cancela enquanto ele não for aprovado.</p>
+    const tipoTxt = S.tipo === "coleta" ? "Coleta" : "Abastecimento", enviado = S.okNum != null, corrigido = /Correção/.test(S.okMsg);
+    const numTxt = S.okNum === "dup" ? "já registrado antes" : "Nº " + S.okNum;
+    const caixa = enviado
+      ? `<div class="ok-grande"><div class="ok-icone">✅</div><div class="ok-titulo">${corrigido ? "CORREÇÃO ENVIADA" : "REGISTRO ENVIADO"}</div><div class="ok-tipo">${tipoTxt}</div><div class="ok-num">${esc(numTxt)}</div><p class="peq">Guarde este número. Se precisar, informe-o ao responsável.</p></div>`
+      : `<div class="ok-grande pend"><div class="ok-icone">📥</div><div class="ok-titulo">AINDA NÃO ENVIADO</div><div class="ok-tipo">${S.okErro ? esc(S.okErro) : "Salvo só neste celular. Será enviado sozinho quando houver sinal."}</div>${online() ? '<button class="pri" data-act="sincronizar" style="margin-top:.8rem">Enviar agora</button>' : ""}<p class="peq">Só vale como enviado quando aparecer o número do registro.</p></div>`;
+    return `${barra()}${caixa}${S.okReg ? `<div class="card">${resumo(S.tipo, S.okReg)}</div>` : ""}
+      <p class="peq">Errou algo? Em <b>Meus registros</b> você corrige ou cancela enquanto ele não for aprovado.</p>
       <button class="pri" data-act="ir" data-t="${S.tipo}">➕ Fazer outro registro</button><div style="height:.6rem"></div><button data-act="ir" data-t="home">🏠 Início</button>`;
   }
   const STATUS = { pendente: "🟡 Aguardando conferência", aprovado: "🟢 Aprovado", rejeitado: "🔴 Devolvido para correção", cancelado: "⚫ Cancelado" };
@@ -382,6 +389,42 @@
       <input id="cl_novo" placeholder="Nome do cliente" autocomplete="off"><button data-act="marcar-novo" style="margin-top:.5rem">📍 Marcar localização aqui</button><div id="cl_novo_msg"></div>
       <p class="peq">O escritório confere a localização antes de ela valer para todos. O GPS só é lido quando você toca no botão.</p>`;
   }
+  function graf(pts, fmt, baixo) {
+    if (!pts.length) return '<p class="peq">Sem dados no período.</p>';
+    const mx = Math.max(...pts.map(p => p.v)) || 1;
+    return `<div class="dre-graf">${pts.map(p => `<div class="dre-col${baixo && baixo(p.v) ? " baixo" : ""}"><em>${fmt(p.v)}</em><i style="height:${Math.max(3, p.v / mx * 80)}%"></i></div>`).join("")}</div><div class="dre-eixo">${pts.map(p => `<span>${esc(p.rot)}</span>`).join("")}</div>`;
+  }
+  function vDre() {
+    const dias = S.dreDias || 30, desde = diasAtras(dias);
+    const cab = `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📊 Meu painel</h2>
+      <div class="dre-per">${[7, 30].map(d => `<button data-act="dre-dias" data-d="${d}" class="${dias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>`;
+    if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
+    const vale = r => ["pendente", "aprovado"].includes(r.status), N = x => Number(x) || 0, soma = (l, f) => l.reduce((t, r) => t + N(r[f]), 0);
+    const ab = S.meus.filter(r => r._tipo === "abast" && vale(r) && String(r.data_abast) >= desde)
+      .sort((a, b) => String(a.data_abast).localeCompare(String(b.data_abast)) || String(a.criado_em).localeCompare(String(b.criado_em)));
+    const co = S.meus.filter(r => r._tipo === "coleta" && vale(r) && String(r.data_coleta) >= desde);
+    if (!ab.length && !co.length) return `${cab}<div class="info">Nenhum registro enviado neste período.</div>`;
+    const gasto = soma(ab, "valor_total"), litros = soma(ab, "litros"), peso = soma(co, "peso_liquido");
+    const cKm = ab.filter(r => N(r.km_rodados) > 0), km = soma(cKm, "km_rodados"), lKm = soma(cKm, "litros");
+    const cons = lKm ? km / lKm : null, custoKm = km ? soma(cKm, "valor_total") / km : null;
+    const kpi = (v, t) => `<div><b>${v}</b><span>${t}</span></div>`, tr = v => v == null ? "—" : v;
+    const porDia = {}; ab.forEach(r => { porDia[r.data_abast] = (porDia[r.data_abast] || 0) + N(r.valor_total); });
+    const gDia = Object.keys(porDia).sort().slice(-15).map(d => ({ rot: brData(d).slice(0, 2), v: porDia[d] }));
+    const gCons = ab.filter(r => N(r.consumo) > 0).slice(-15).map(r => ({ rot: brData(String(r.data_abast)).slice(0, 2), v: N(r.consumo) }));
+    const pl = {}; ab.forEach(r => { const p = pl[r.placa] = pl[r.placa] || { g: 0, l: 0, km: 0, lk: 0 }; p.g += N(r.valor_total); p.l += N(r.litros); if (N(r.km_rodados) > 0) { p.km += N(r.km_rodados); p.lk += N(r.litros); } });
+    const linhasPl = Object.keys(pl).map(k => `<tr><td>${esc(k)}</td><td>R$ ${num(pl[k].g)}</td><td>${num(pl[k].l, 1)} L</td><td>${pl[k].lk ? num(pl[k].km / pl[k].lk, 1) : "—"}</td></tr>`).join("");
+    const ult = ab.slice().reverse().slice(0, 10).map(r => `<tr><td>${brData(String(r.data_abast)).slice(0, 5)}</td><td>${esc(r.posto || "")}</td><td>R$ ${num(r.valor_total)}</td><td>${N(r.consumo) > 0 ? num(r.consumo, 1) : "—"}</td></tr>`).join("");
+    return `${cab}
+      <h2>Resumo (DRE)</h2>
+      <div class="dre-kpi">${kpi("R$ " + num(gasto), "Gasto combustível")}${kpi(num(litros, 1) + " L", "Litros")}${kpi(litros ? "R$ " + num(gasto / litros) : "—", "Preço médio/L")}</div>
+      <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons, 1)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>
+      <div class="dre-kpi">${kpi(co.length, "Coletas")}${kpi(peso ? num(peso, 0) + " kg" : "—", "Peso líquido")}${kpi(peso ? "R$ " + num(gasto / peso) : "—", "Combustível por kg")}</div>
+      <h2>Gasto por dia (R$)</h2>${graf(gDia, v => fmtInt(v))}
+      <h2>Rendimento (km/L)</h2>${graf(gCons, v => num(v, 1), v => cons && v < cons * 0.9)}<p class="peq">Barra amarela = abaixo da sua média.</p>
+      <h2>Por veículo</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Placa</th><th>Gasto</th><th>Litros</th><th>km/L</th></tr>${linhasPl}</table></div>
+      <h2>Últimos abastecimentos</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Data</th><th>Posto</th><th>Valor</th><th>km/L</th></tr>${ult}</table></div>
+      <p class="peq">Considera os registros já enviados (aguardando conferência ou aprovados) nos últimos ${dias} dias. Não inclui registros ainda salvos só no celular.</p>`;
+  }
   function vMeus() {
     const fila = (S._fila || []).filter(i => i.motorista === S.sessao.nome);
     const locais = fila.map(i => `<div class="card">${resumo(i.tipo, i.reg)}<div class="st">📥 Aguardando envio</div>${i.erro ? `<div class="erro">${esc(i.erro)}</div>` : ""}
@@ -396,7 +439,7 @@
   }
 
   function render() {
-    const v = { login: vLogin, home: vHome, meus: vMeus, clientes: vClientes }[S.tela]
+    const v = { login: vLogin, home: vHome, meus: vMeus, dre: vDre, clientes: vClientes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk) : vHome);
     app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co"].forEach(pintarFotos);
@@ -412,7 +455,7 @@
   async function irPara(t) {
     limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
     S._fila = await contarFila();
-    if (t === "meus") { S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados."; render(); await carregarMeus(); }
+    if (t === "meus" || t === "dre") { S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados."; render(); await carregarMeus(); }
     render();
   }
   function lerAbast() {
@@ -476,12 +519,14 @@
     try {
       if (S.edit && S.edit.origem === "servidor") {
         await rpc("app_corrigir", { p_token: token(), p_tabela: tipo, p_id: S.edit.id, p_reg: payload(tipo, r), p_foto: null, p_fotos: S.fotos });
-        S.okMsg = "✅ Correção enviada!";
+        S.okMsg = "✅ Correção enviada!"; S.okNum = S.edit.id; S.okReg = payload(tipo, r); S.okIdc = null; S.okErro = "";
       } else {
         const id = S.edit && S.edit.origem === "fila" ? S.edit.id : uuid();
         await idb.put("fila", { id_cliente: id, tipo, motorista: S.sessao.nome, registrado_em: (S.edit && S.edit.registrado_em) || new Date().toISOString(), reg: payload(tipo, r), fotos: S.fotos.slice(), erro: null });
+        S.okIdc = id; S.okNum = null; S.okReg = payload(tipo, r);
         S._fila = await contarFila(); await sincronizar();
         const ainda = await idb.get("fila", id);
+        S.okErro = ainda ? (ainda.erro || "") : ""; if (!ainda) { S.okNum = S.protocolos[id] !== undefined ? S.protocolos[id] : "dup"; S.okIdc = null; }
         S.okMsg = ainda ? "📥 Salvo no celular! Será enviado automaticamente quando houver sinal." : "✅ Enviado!";
       }
       S.fase = "ok"; S._fila = await contarFila(); render();
@@ -507,6 +552,7 @@
       limparSessao(); S.sessao = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
     ir(a) { irPara(a.dataset.t); },
+    "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
     "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },
     "marcar-novo"(a) { return acaoMarcar($("#cl_novo").value, a, $("#cl_novo_msg")); },
     "marcar-coleta"(a) { const sel = $("#co_cli").value; return acaoMarcar(sel === OUTRO ? $("#co_cli_txt").value : sel, a, $("#msg_loc")); },
@@ -564,6 +610,7 @@
     const el = ev.target;
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
     if (el.id === "co_cli") atualizarNav();
+    if (el.id === "cf_ok") { const b = $("#btn_salvar"); if (b) b.disabled = !el.checked; }
     if (el.type === "file" && el.files && el.files.length) {
       const pref = el.id.split("_")[0]; let ignoradas = 0, erro = "";
       for (const f of Array.from(el.files)) {
@@ -581,7 +628,26 @@
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
 
   // ============================ início ============================
+  const CSS_EXTRA = `#btn_salvar{background:#1f7a4d!important;border-color:#1f7a4d!important;color:#fff!important}
+#btn_salvar:disabled{background:#c9ced3!important;border-color:#c9ced3!important;color:#6b7280!important;cursor:not-allowed}
+.ok-grande{text-align:center;background:#e8f6ee;border:2px solid #1f7a4d;border-radius:16px;padding:1.4rem 1rem;margin:.8rem 0;color:#14532d}
+.ok-grande.pend{background:#fff6e0;border-color:#d99a00;color:#7a4b00}
+.ok-icone{font-size:3.4rem;line-height:1}.ok-titulo{font-size:1.5rem;font-weight:800;margin:.4rem 0}.ok-tipo{font-size:1rem}
+.ok-num{font-size:2.8rem;font-weight:800;margin:.3rem 0}
+.dre-per{display:flex;gap:.5rem;margin:.6rem 0}.dre-per button{flex:1;min-height:2.6rem}
+.dre-per button.on{background:#1f7a4d!important;color:#fff!important;border-color:#1f7a4d!important}
+.dre-kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin:.5rem 0}
+.dre-kpi div{background:#fff;border:1px solid #e3e7e5;border-radius:12px;padding:.6rem .3rem;text-align:center;color:#1b2b24}
+.dre-kpi b{display:block;font-size:1rem}.dre-kpi span{font-size:.68rem;opacity:.75}
+.dre-graf{display:flex;align-items:flex-end;gap:4px;height:140px;border-bottom:1px solid #cfd6d2;padding-top:.3rem}
+.dre-col{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-width:0}
+.dre-col i{display:block;width:100%;background:#1f7a4d;border-radius:4px 4px 0 0}.dre-col.baixo i{background:#d99a00}
+.dre-col em{font-style:normal;font-size:.58rem;opacity:.8}
+.dre-eixo{display:flex;gap:4px}.dre-eixo span{flex:1;text-align:center;font-size:.6rem;opacity:.7}
+.dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid #e3e7e5;text-align:right}
+.dre-tab th:first-child,.dre-tab td:first-child{text-align:left}`;
   async function iniciar() {
+    document.head.appendChild(Object.assign(document.createElement("style"), { textContent: CSS_EXTRA }));
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => { });
     const c = await idb.get("cache", "nomes"); S.nomes = c ? c.v : [];
     const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
