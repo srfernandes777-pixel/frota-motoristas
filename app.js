@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
+  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -182,7 +182,10 @@
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
         : enviados ? { t: `✅ ${enviados} registro(s) enviado(s)!`, c: "ok" } : { t: "Não há nada para enviar.", c: "info" };
     } else if (enviados) S.syncMsg = null;
-    if (["home", "meus"].includes(S.tela)) { if (S.tela === "meus") await carregarMeus(); render(); }
+    if (["home", "meus"].includes(S.tela)) {
+      if (S.tela === "meus") { await carregarMeus(); await carregarUltimosAbast(); }
+      render();
+    }
   }
 
   // ============================ foto ============================
@@ -434,7 +437,19 @@
     else if (!S.meus.length) servidor = '<p class="peq">Nenhum registro enviado nos últimos 30 dias.</p>';
     else servidor = S.meus.map(r => `<div class="card">${resumo(r._tipo, r)}<div class="st">${STATUS[r.status] || esc(r.status)}</div>${r.status === "rejeitado" && r.motivo ? `<div class="erro">Motivo: ${esc(r.motivo)}</div>` : ""}
       ${["pendente", "rejeitado"].includes(r.status) ? `<div class="linha"><button data-act="corrigir-srv" data-id="${r.id}" data-t="${r._tipo}">✏️ Corrigir</button><button class="perigo" data-act="cancelar-srv" data-id="${r.id}" data-t="${r._tipo}">🗑️ Cancelar</button></div>` : ""}</div>`).join("");
+    const avisoAbast = S.ultimosAbastErro ? `<div class="aviso">${esc(S.ultimosAbastErro)}</div>` : "";
+    const abast = S.ultimosAbast == null
+      ? `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`
+      : `${avisoAbast}${!S.ultimosAbast.length
+        ? '<p class="peq">Ainda não há abastecimentos ativos registrados para os caminhões.</p>'
+        : `<div class="abast-historico">${S.ultimosAbast.map(r => `<div class="card abast-hist-card">
+            <div class="abast-hist-top"><b>🚚 ${esc(r.placa)}</b><span>${brData(String(r.data_abast))}</span></div>
+            <div class="st">${STATUS[r.status] || esc(r.status)}</div>
+            <div><b>${esc(r.motorista)}</b> abasteceu ${esc(r.combustivel)}${r.posto ? ` no ${esc(r.posto)}` : ""}.</div>
+            <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
+          </div>`).join("")}</div>`}`;
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📋 Meus registros</h2><div id="msg"></div>
+      <h2>⛽ Último abastecimento de cada caminhão</h2><p class="peq">Mostra o registro mais recente de cada veículo, mesmo que seja mais antigo que 30 dias.</p>${abast}
       ${locais ? `<h2>No celular (ainda não enviados)</h2>${locais}` : ""}<h2>Já enviados (últimos 30 dias)</h2>${servidor}`;
   }
 
@@ -452,10 +467,41 @@
     try { S.meus = await rpc("app_meus", { p_token: token() }); S.meusErro = ""; }
     catch (e) { S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
+  async function carregarUltimosAbast() {
+    if (!online()) {
+      S.ultimosAbastErro = S.ultimosAbast == null
+        ? "Sem sinal: o histórico será carregado quando houver conexão."
+        : "Sem sinal: mostrando histórico salvo localmente, que pode estar desatualizado.";
+      return;
+    }
+    S.ultimosAbastCarregando = true;
+    try {
+      const dados = await rpc("app_ultimos_abastecimentos", { p_token: token() });
+      S.ultimosAbast = Array.isArray(dados) ? dados : [];
+      S.ultimosAbastErro = "";
+      await idb.put("cache", { k: "ultimos-abastecimentos", v: S.ultimosAbast });
+    } catch (e) {
+      S.ultimosAbastErro = e.rede
+        ? "Sem sinal: não foi possível atualizar o histórico."
+        : "Não foi possível carregar o histórico. Confirme se a função SQL do histórico foi instalada.";
+      if (!e.rede && e.message === "sessao_invalida") sessaoExpirada();
+    } finally { S.ultimosAbastCarregando = false; }
+  }
   async function irPara(t) {
     limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
     S._fila = await contarFila();
-    if (t === "meus" || t === "dre") { S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados."; render(); await carregarMeus(); }
+    if (t === "meus" || t === "dre") {
+      S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados.";
+      if (t === "meus") {
+        S.ultimosAbastErro = online() ? "" : (S.ultimosAbast == null
+          ? "Sem sinal: o histórico será carregado quando houver conexão."
+          : "Sem sinal: mostrando histórico salvo localmente, que pode estar desatualizado.");
+        S.ultimosAbastCarregando = online();
+      }
+      render();
+      if (t === "meus") await Promise.all([carregarMeus(), carregarUltimosAbast()]);
+      else await carregarMeus();
+    }
     render();
   }
   function lerAbast() {
@@ -591,7 +637,12 @@
     },
     async "cancelar-srv"(a) {
       if (!confirm("Cancelar este registro?")) return;
-      try { await rpc("app_cancelar", { p_token: token(), p_tabela: a.dataset.t, p_id: Number(a.dataset.id) }); await carregarMeus(); render(); }
+      try {
+        await rpc("app_cancelar", { p_token: token(), p_tabela: a.dataset.t, p_id: Number(a.dataset.id) });
+        await carregarMeus();
+        if (a.dataset.t === "abast") await carregarUltimosAbast();
+        render();
+      }
       catch (e) { msg(esc(msgErro(e))); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
     }
   };
@@ -645,12 +696,23 @@
 .dre-col em{font-style:normal;font-size:.58rem;opacity:.8}
 .dre-eixo{display:flex;gap:4px}.dre-eixo span{flex:1;text-align:center;font-size:.6rem;opacity:.7}
 .dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid #e3e7e5;text-align:right}
-.dre-tab th:first-child,.dre-tab td:first-child{text-align:left}`;
+.dre-tab th:first-child,.dre-tab td:first-child{text-align:left}
+.abast-historico{display:grid;gap:.2rem}
+.abast-hist-card{line-height:1.45}
+.abast-hist-top{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+.abast-hist-top b{font-size:1.08rem}
+.abast-hist-top span{color:var(--mut);font-size:.88rem}
+.abast-hist-dados{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.45rem;margin-top:.7rem}
+.abast-hist-dados span{background:var(--bg);border-radius:9px;padding:.5rem .3rem;text-align:center}
+.abast-hist-dados b,.abast-hist-dados small{display:block}
+.abast-hist-dados b{font-size:.95rem}
+.abast-hist-dados small{color:var(--mut);font-size:.72rem}`;
   async function iniciar() {
     document.head.appendChild(Object.assign(document.createElement("style"), { textContent: CSS_EXTRA }));
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => { });
     const c = await idb.get("cache", "nomes"); S.nomes = c ? c.v : [];
     const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
+    const la = await idb.get("cache", "ultimos-abastecimentos"); S.ultimosAbast = la ? la.v : null;
     S.sessao = lerSessao();
     if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.tela = "home"; render(); atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); }
     else render();
