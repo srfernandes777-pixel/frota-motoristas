@@ -95,7 +95,7 @@
   }
 
   // ============================ estado ============================
-  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
+  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, abastVeiculo: "", abastDias: 7, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -438,18 +438,26 @@
     else servidor = S.meus.map(r => `<div class="card">${resumo(r._tipo, r)}<div class="st">${STATUS[r.status] || esc(r.status)}</div>${r.status === "rejeitado" && r.motivo ? `<div class="erro">Motivo: ${esc(r.motivo)}</div>` : ""}
       ${["pendente", "rejeitado"].includes(r.status) ? `<div class="linha"><button data-act="corrigir-srv" data-id="${r.id}" data-t="${r._tipo}">✏️ Corrigir</button><button class="perigo" data-act="cancelar-srv" data-id="${r.id}" data-t="${r._tipo}">🗑️ Cancelar</button></div>` : ""}</div>`).join("");
     const avisoAbast = S.ultimosAbastErro ? `<div class="aviso">${esc(S.ultimosAbastErro)}</div>` : "";
-    const abast = S.ultimosAbast == null
-      ? `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`
-      : `${avisoAbast}${!S.ultimosAbast.length
-        ? '<p class="peq">Ainda não há abastecimentos ativos registrados para os caminhões.</p>'
-        : `<div class="abast-historico">${S.ultimosAbast.map(r => `<div class="card abast-hist-card">
-            <div class="abast-hist-top"><b>🚚 ${esc(r.placa)}</b><span>${brData(String(r.data_abast))}</span></div>
-            <div class="st">${STATUS[r.status] || esc(r.status)}</div>
+    const veiculos = ((S.listas && S.listas.veiculos) || []).slice().sort((a, b) => a.placa.localeCompare(b.placa, "pt-BR"));
+    const opcoesAbast = veiculos.length
+      ? `<div class="abast-veiculos">${veiculos.map(v => `<button data-act="abast-veiculo" data-placa="${esc(v.placa)}" class="${S.abastVeiculo === v.placa ? "on" : ""}">🚚 ${esc(v.placa)}</button>`).join("")}</div>`
+      : '<p class="peq">Não há veículos cadastrados para selecionar.</p>';
+    let abast;
+    if (S.ultimosAbast == null) abast = `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`;
+    else if (!S.abastVeiculo) abast = '<p class="peq">Selecione um veículo para consultar os abastecimentos.</p>';
+    else {
+      const desde = diasAtras(S.abastDias), registros = S.ultimosAbast
+        .filter(r => r.placa === S.abastVeiculo && String(r.data_abast) >= desde)
+        .sort((a, b) => String(b.data_abast).localeCompare(String(a.data_abast)) || String(b.criado_em || "").localeCompare(String(a.criado_em || "")));
+      abast = `${avisoAbast}<div class="dre-per abast-periodo">${[7, 30].map(d => `<button data-act="abast-dias" data-d="${d}" class="${S.abastDias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>
+        ${registros.length ? `<div class="abast-historico">${registros.map(r => `<div class="card abast-hist-card">
+            <div class="abast-hist-top"><b>${brData(String(r.data_abast))}</b><span>${STATUS[r.status] || esc(r.status)}</span></div>
             <div><b>${esc(r.motorista)}</b> abasteceu ${esc(r.combustivel)}${r.posto ? ` no ${esc(r.posto)}` : ""}.</div>
             <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
-          </div>`).join("")}</div>`}`;
+          </div>`).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
+    }
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📋 Meus registros</h2><div id="msg"></div>
-      <h2>⛽ Último abastecimento de cada caminhão</h2><p class="peq">Mostra o registro mais recente de cada veículo, mesmo que seja mais antigo que 30 dias.</p>${abast}
+      <h2>⛽ Abastecimentos por veículo</h2><p class="peq">Escolha um veículo e o período para consultar os abastecimentos.</p>${opcoesAbast}${abast}
       ${locais ? `<h2>No celular (ainda não enviados)</h2>${locais}` : ""}<h2>Já enviados (últimos 30 dias)</h2>${servidor}`;
   }
 
@@ -599,6 +607,8 @@
     },
     ir(a) { irPara(a.dataset.t); },
     "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
+    "abast-veiculo"(a) { S.abastVeiculo = a.dataset.placa; render(); },
+    "abast-dias"(a) { S.abastDias = Number(a.dataset.d); render(); },
     "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },
     "marcar-novo"(a) { return acaoMarcar($("#cl_novo").value, a, $("#cl_novo_msg")); },
     "marcar-coleta"(a) { const sel = $("#co_cli").value; return acaoMarcar(sel === OUTRO ? $("#co_cli_txt").value : sel, a, $("#msg_loc")); },
@@ -698,6 +708,10 @@
 .dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid #e3e7e5;text-align:right}
 .dre-tab th:first-child,.dre-tab td:first-child{text-align:left}
 .abast-historico{display:grid;gap:.2rem}
+.abast-veiculos{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0}
+.abast-veiculos button{width:auto;min-height:2.7rem}
+.abast-veiculos button.on{background:#1f7a4d!important;color:#fff!important;border-color:#1f7a4d!important}
+.abast-periodo{margin:.5rem 0}
 .abast-hist-card{line-height:1.45}
 .abast-hist-top{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
 .abast-hist-top b{font-size:1.08rem}
