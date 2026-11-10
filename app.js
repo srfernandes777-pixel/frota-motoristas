@@ -182,8 +182,9 @@
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
         : enviados ? { t: `✅ ${enviados} registro(s) enviado(s)!`, c: "ok" } : { t: "Não há nada para enviar.", c: "info" };
     } else if (enviados) S.syncMsg = null;
-    if (["home", "meus"].includes(S.tela)) {
-      if (S.tela === "meus") { await carregarMeus(); await carregarUltimosAbast(); }
+    if (["home", "meus", "frota"].includes(S.tela)) {
+      if (S.tela === "meus") await carregarMeus();
+      if (S.tela === "frota") await carregarUltimosAbast();
       render();
     }
   }
@@ -278,7 +279,7 @@
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
-      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
+      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" data-act="ir" data-t="frota">🚚<br>Registros da Frota</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
   }
   const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
   const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
@@ -437,6 +438,10 @@
     else if (!S.meus.length) servidor = '<p class="peq">Nenhum registro enviado nos últimos 30 dias.</p>';
     else servidor = S.meus.map(r => `<div class="card">${resumo(r._tipo, r)}<div class="st">${STATUS[r.status] || esc(r.status)}</div>${r.status === "rejeitado" && r.motivo ? `<div class="erro">Motivo: ${esc(r.motivo)}</div>` : ""}
       ${["pendente", "rejeitado"].includes(r.status) ? `<div class="linha"><button data-act="corrigir-srv" data-id="${r.id}" data-t="${r._tipo}">✏️ Corrigir</button><button class="perigo" data-act="cancelar-srv" data-id="${r.id}" data-t="${r._tipo}">🗑️ Cancelar</button></div>` : ""}</div>`).join("");
+    return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📋 Meus registros</h2><div id="msg"></div>
+      ${locais ? `<h2>No celular (ainda não enviados)</h2>${locais}` : ""}<h2>Já enviados (últimos 30 dias)</h2>${servidor}`;
+  }
+  function vFrota() {
     const avisoAbast = S.ultimosAbastErro ? `<div class="aviso">${esc(S.ultimosAbastErro)}</div>` : "";
     const veiculos = ((S.listas && S.listas.veiculos) || []).slice().sort((a, b) => a.placa.localeCompare(b.placa, "pt-BR"));
     const opcoesAbast = veiculos.length
@@ -456,13 +461,12 @@
             <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
           </div>`).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
     }
-    return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📋 Meus registros</h2><div id="msg"></div>
-      <h2>⛽ Abastecimentos por veículo</h2><p class="peq">Escolha um veículo e o período para consultar os abastecimentos.</p>${opcoesAbast}${abast}
-      ${locais ? `<h2>No celular (ainda não enviados)</h2>${locais}` : ""}<h2>Já enviados (últimos 30 dias)</h2>${servidor}`;
+    return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>🚚 Registros da Frota</h2>
+      <p class="peq">Consulte os abastecimentos feitos por qualquer motorista. Escolha um veículo e o período.</p>${opcoesAbast}${abast}`;
   }
 
   function render() {
-    const v = { login: vLogin, home: vHome, meus: vMeus, dre: vDre, clientes: vClientes }[S.tela]
+    const v = { login: vLogin, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk) : vHome);
     app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co"].forEach(pintarFotos);
@@ -498,17 +502,19 @@
   async function irPara(t) {
     limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
     S._fila = await contarFila();
-    if (t === "meus" || t === "dre") {
-      S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados.";
-      if (t === "meus") {
+    if (t === "meus" || t === "dre" || t === "frota") {
+      if (t === "meus" || t === "dre") {
+        S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados.";
+      }
+      if (t === "frota") {
         S.ultimosAbastErro = online() ? "" : (S.ultimosAbast == null
           ? "Sem sinal: o histórico será carregado quando houver conexão."
           : "Sem sinal: mostrando histórico salvo localmente, que pode estar desatualizado.");
         S.ultimosAbastCarregando = online();
       }
       render();
-      if (t === "meus") await Promise.all([carregarMeus(), carregarUltimosAbast()]);
-      else await carregarMeus();
+      if (t === "meus" || t === "dre") await carregarMeus();
+      if (t === "frota") await carregarUltimosAbast();
     }
     render();
   }
@@ -683,8 +689,8 @@
       el.value = "";
     }
   });
-  window.addEventListener("online", async () => { if (S.sessao) { atualizarListas(); sincronizar(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "login"].includes(S.tela)) render(); });
-  window.addEventListener("offline", () => { if (["home", "meus", "login"].includes(S.tela)) render(); });
+  window.addEventListener("online", async () => { if (S.sessao) { atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
+  window.addEventListener("offline", () => { if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && S.sessao) sincronizar(); });
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
 
