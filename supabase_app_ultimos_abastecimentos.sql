@@ -1,5 +1,5 @@
 -- Histórico compartilhado: abastecimentos ativos dos veículos cadastrados
--- nos últimos 30 dias. A tela permite selecionar um veículo e filtrar 7/30 dias.
+-- nos últimos 30 dias, mais o registro mais recente de cada veículo, mesmo antigo.
 -- Execute no SQL Editor do Supabase. A função valida a sessão pelo token
 -- usando o mesmo mecanismo das demais funções do aplicativo.
 CREATE OR REPLACE FUNCTION public.app_ultimos_abastecimentos(p_token text)
@@ -25,7 +25,8 @@ BEGIN
         'odometro', a.odometro,
         'km_rodados', a.km_rodados,
         'consumo', a.consumo,
-        'status', a.status
+        'status', a.status,
+        'criado_em', a.criado_em
       )
       ORDER BY a.placa, a.data_abast DESC, a.criado_em DESC, a.id DESC
     )
@@ -37,7 +38,12 @@ BEGIN
       FROM public.abastecimentos_pendentes AS a
       JOIN public.veiculos_pub AS v ON v.placa = a.placa
       WHERE a.status IN ('pendente', 'aprovado')
-        AND a.data_abast >= CURRENT_DATE - 30
+        AND (a.data_abast >= CURRENT_DATE - 30 OR a.id = (
+          SELECT anterior.id FROM public.abastecimentos_pendentes AS anterior
+          WHERE anterior.placa = a.placa AND anterior.status IN ('pendente', 'aprovado')
+          ORDER BY anterior.data_abast DESC, anterior.criado_em DESC, anterior.id DESC
+          LIMIT 1
+        ))
     ) AS a
   ), '[]'::json);
 END;

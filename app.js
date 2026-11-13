@@ -3,6 +3,8 @@
   const CFG = window.CONFIG || {};
   const TARAS = { 20: 1.8, 60: 3.5, 200: 8.5 };
   const MAX_SALTO = 3000, DIAS_ATRAS = 7, MAX_FOTOS = 5, OUTRO = "__outro__";
+  const CATEGORIAS = { hidraulico_compactador: "Sistema Hidráulico e Compactador", freios_suspensao: "Freios e Suspensão", pneus_rodas: "Pneus e Rodas", motor_transmissao: "Motor e Transmissão", eletrico_iluminacao: "Sistema Elétrico e Iluminação", carroceria_seguranca: "Carroceria e Segurança" };
+  const CRITICIDADES = { leve: "🟢 Leve / Pode rodar", atencao: "🟡 Atenção / Agendar", critico: "🔴 Crítico / Parar veículo" };
   const $ = (s, r) => (r || document).querySelector(s);
   const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
@@ -95,7 +97,7 @@
   }
 
   // ============================ estado ============================
-  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, abastVeiculo: "", abastDias: 7, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {} };
+  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], anexos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, abastVeiculo: "", abastDias: 7, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {}, turnos: null, turno: null, turnoErro: "", manutencoes: null, historico: null, manutErro: "" };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -164,7 +166,8 @@
       for (const it of meus) {
         try {
           const regEnv = Object.assign({}, it.reg, { id_cliente: it.id_cliente, registrado_em: it.registrado_em });
-          let resp; if (it.tipo === "local") resp = await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
+          let resp; if (it.tipo === "manutencao") resp = await enviarManutencao(it);
+          else if (it.tipo === "local") resp = await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
           else resp = await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: regEnv, p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
           S.protocolos[it.id_cliente] = resp && resp.id != null ? resp.id : "dup"; await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
@@ -182,15 +185,50 @@
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
         : enviados ? { t: `✅ ${enviados} registro(s) enviado(s)!`, c: "ok" } : { t: "Não há nada para enviar.", c: "info" };
     } else if (enviados) S.syncMsg = null;
-    if (["home", "meus", "frota"].includes(S.tela)) {
+    if (["home", "meus", "frota", "manutencoes"].includes(S.tela)) {
       if (S.tela === "meus") await carregarMeus();
       if (S.tela === "frota") await carregarUltimosAbast();
+      if (S.tela === "manutencoes" && enviados) await carregarManutencoes();
       render();
     }
   }
 
   // ============================ foto ============================
   const lerBase64 = blob => new Promise((res, rej) => { const f = new FileReader(); f.onload = () => res(String(f.result).split(",")[1]); f.onerror = () => rej(f.error); f.readAsDataURL(blob); });
+  async function enviarManutencao(it) {
+    if (!it.servidor_id) {
+      const resp = await rpc("app_enviar_manutencao", { p_token: token(), p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente }) });
+      if (!resp || !resp.ok || resp.id == null) throw new Error("Resposta inválida ao enviar relato.");
+      it.servidor_id = resp.id;
+      await idb.put("fila", it);
+    }
+    for (const anexo of it.anexos || []) {
+      const tamanho = 256 * 1024, total = Math.ceil(anexo.blob.size / tamanho);
+      for (let indice = anexo.proximo || 0; indice < total; indice++) {
+        const dados = await lerBase64(anexo.blob.slice(indice * tamanho, (indice + 1) * tamanho));
+        const resp = await rpc("app_anexar_manutencao", { p_token: token(), p_manutencao_id: it.servidor_id, p_id_cliente: anexo.id, p_tipo: anexo.tipo, p_mime: anexo.mime, p_indice: indice, p_total: total, p_dados: dados });
+        if (!resp || !resp.ok || (indice === total - 1 && !resp.completo)) throw new Error("O servidor não confirmou a evidência.");
+        anexo.proximo = indice + 1;
+        await idb.put("fila", it);
+      }
+    }
+    return { id: it.servidor_id };
+  }
+  const listarAnexos = () => S.anexos.map((a, i) => `<div class="card">${a.tipo === "foto" ? "📷" : "🎬"} ${esc(a.nome)} <button data-act="rm-anexo" data-i="${i}">Remover</button></div>`).join("");
+  function duracaoVideo(file) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video"), url = URL.createObjectURL(file);
+      const timer = setTimeout(() => terminar(new Error("Não foi possível verificar a duração do vídeo.")), 15000);
+      function terminar(erro) {
+        clearTimeout(timer); video.removeAttribute("src"); video.load(); URL.revokeObjectURL(url);
+        if (erro) reject(erro); else resolve();
+      }
+      video.preload = "metadata";
+      video.onloadedmetadata = () => terminar(!Number.isFinite(video.duration) || video.duration <= 0 || video.duration > 15 ? new Error("O vídeo deve ter até 15 segundos e duração verificável.") : null);
+      video.onerror = () => terminar(new Error("Não foi possível ler o vídeo neste aparelho."));
+      video.src = url;
+    });
+  }
   async function processarFoto(file) {
     try {  // reduz para no máx. 1600 px e comprime (economiza dados móveis e espaço)
       if (typeof createImageBitmap !== "function" || !document.createElement("canvas").getContext) throw new Error("sem canvas");
@@ -262,7 +300,7 @@
     const comErro = (S._fila || []).filter(i => i.motorista === S.sessao.nome && i.erro);
     const msgEnvio = S.syncMsg ? `<div class="${S.syncMsg.c}">${esc(S.syncMsg.t)}</div>` : "";
     const msgErroFila = comErro.length && !(S.syncMsg && S.syncMsg.c === "erro")
-      ? `<div class="erro">⚠️ ${comErro.length} registro(s) não aceito(s) pelo servidor: ${esc(comErro[0].erro)}<br>Toque em <b>Meus registros</b> para corrigir ou excluir, ou em <b>Enviar agora</b> para tentar de novo.</div>` : "";
+      ? `<div class="erro">⚠️ ${comErro.length} registro(s) não aceito(s) pelo servidor: ${esc(comErro[0].erro)}<br>Consulte <b>Meus registros</b> ou <b>Manutenção</b> e avise o responsável se necessário. Toque em <b>Enviar agora</b> para tentar de novo.</div>` : "";
     return `<div class="barra"><div>👤 <b>${esc(S.sessao.nome)}</b>${chip}</div><button data-act="trocar">Trocar</button></div>` +
       (n ? `<div class="aviso">📥 ${n} registro(s) aguardando envio.${online() ? ' <button data-act="sincronizar">Enviar agora</button>' : " Serão enviados quando houver sinal."}</div>` : "") + msgEnvio + msgErroFila;
   }
@@ -279,7 +317,43 @@
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
-      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" data-act="ir" data-t="frota">🚚<br>Registros da Frota</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
+      ${S.turno ? `<div class="card"><b>🚚 ${esc(S.turno.placa)}</b> · ${esc(S.turno.rota || "Sem rota")} · ${esc(S.turno.periodo)}<button data-act="trocar-turno">Trocar turno</button></div>` : ""}
+      <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="manutencao">🔧<br>Manutenção</button><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" data-act="ir" data-t="frota">🚚<br>Registros da Frota</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
+  }
+  function vTurnos() {
+    const opcoes = (S.turnos || []).map(t => `<option value="${esc(t.id)}">${esc(t.placa)} · ${esc(t.rota || "Sem rota")} · ${esc(t.periodo)}</option>`).join("");
+    return `${barra()}<h1>Escolha seu turno</h1><p class="peq">Selecione o caminhão e a rota atribuídos a você.</p>
+      <label for="turno_data">Data do turno</label><input id="turno_data" type="date" value="${esc(S.turnoData || hoje())}">
+      ${S.turnoErro ? `<div class="aviso">${esc(S.turnoErro)}</div>` : ""}
+      ${opcoes ? `<label for="turno">Turno atribuído</label><select id="turno"><option value="">— selecione —</option>${opcoes}</select><div id="msg" role="alert"></div><button class="pri" data-act="selecionar-turno">Continuar</button>` : `<div class="info">${S.turnos == null ? "Carregando turnos…" : "Nenhum turno atribuído para esta data. Avise o responsável."}</div>`}
+      <button data-act="recarregar-turnos">🔄 Atualizar turnos</button>`;
+  }
+  function vManutencao() {
+    const r = S.rasc || {}, t = S.turno;
+    return `${topo("🔧 Relatar manutenção")}<div class="card"><b>Caminhão:</b> ${esc(t.placa)}<br><b>Rota:</b> ${esc(t.rota || "—")}<br><b>Turno:</b> ${esc(t.periodo)} · ${esc(brData(t.data))}</div>
+      <label for="ma_odo">Odômetro (km)</label><input id="ma_odo" data-mask="int" value="${r.odometro != null ? fmtInt(r.odometro) : ""}">
+      <label for="ma_hora">Horímetro (horas)</label><input id="ma_hora" data-mask="dec" value="${r.horimetro != null ? fmtDec(r.horimetro) : ""}">
+      <label for="ma_cat">Sistema</label><select id="ma_cat"><option value="">— selecione —</option>${Object.entries(CATEGORIAS).map(([v, texto]) => `<option value="${v}" ${r.categoria === v ? "selected" : ""}>${esc(texto)}</option>`).join("")}</select>
+      <fieldset><legend>Nível de criticidade</legend>${Object.entries(CRITICIDADES).map(([v, texto]) => `<label class="chk"><input type="radio" name="criticidade" value="${v}" ${r.criticidade === v ? "checked" : ""}> ${texto}</label>`).join("")}</fieldset>
+      <label for="ma_desc">Descreva o problema</label><textarea id="ma_desc" maxlength="2000">${esc(r.descricao || "")}</textarea>
+      <label for="ma_fotos">Fotos (opcional, até 5, 5 MiB cada)</label><input type="file" id="ma_fotos" accept="image/jpeg,image/png,image/webp" multiple>
+      <label for="ma_video">Vídeo curto (opcional, até 15 segundos e 20 MiB)</label><input type="file" id="ma_video" accept="video/mp4,video/webm,video/quicktime"><div id="ma_anexos">${listarAnexos()}</div>
+      <div id="msg"></div><button class="pri" data-act="validar-manutencao">Continuar</button>
+      <button data-act="ir" data-t="manutencoes">📋 Acompanhar relatos e histórico</button>`;
+  }
+  function vConfManutencao() {
+    const r = S.rasc;
+    return `${topo("Confira o relato")}<div class="card"><b>Caminhão:</b> ${esc(S.turno.placa)}<br><b>Rota:</b> ${esc(S.turno.rota || "—")}<br><b>Turno:</b> ${esc(S.turno.periodo)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km<br><b>Horímetro:</b> ${fmtDec(r.horimetro)} h<br><b>Sistema:</b> ${esc(CATEGORIAS[r.categoria])}<br><b>Criticidade:</b> ${esc(CRITICIDADES[r.criticidade])}<br><b>Problema:</b> ${esc(r.descricao)}</div>
+      <p>${S.anexos.length} evidência(s) selecionada(s)</p>
+      <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo os dados do relato</label><div id="msg"></div><div class="linha"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar-manutencao" disabled>✅ Salvar relato</button></div>`;
+  }
+  function vManutencoes() {
+    const fila = (S._fila || []).filter(i => i.tipo === "manutencao" && i.motorista === S.sessao.nome);
+    const locais = fila.map(i => `<div class="card"><b>${esc(CATEGORIAS[i.reg.categoria])}</b> · ${esc(i.placa)}<br>${esc(CRITICIDADES[i.reg.criticidade])}<div class="st">📥 ${i.servidor_id ? "Relato enviado; evidências aguardando envio" : "Aguardando envio"}</div>${i.erro ? `<div class="erro">${esc(i.erro)}</div>` : ""}${!i.servidor_id ? `<button class="perigo" data-act="excluir-fila" data-id="${esc(i.id_cliente)}">Excluir relato local</button>` : ""}</div>`).join("");
+    const estados = { recebido: "Recebido", visualizado: "Visualizado", agendado: "Agendado", em_andamento: "Em andamento", concluido: "Concluído", cancelado: "Cancelado" };
+    const relatos = S.manutencoes == null ? `<div class="info">${esc(S.manutErro || "Carregando relatos…")}</div>` : S.manutencoes.length ? S.manutencoes.map(r => `<div class="card"><b>${esc(CATEGORIAS[r.categoria] || r.categoria)}</b> · ${esc(r.placa)}<br>${esc(CRITICIDADES[r.criticidade] || r.criticidade)}<br>${esc(r.descricao)}<div class="st">${r.visualizado_em ? "✅ Visto pelo responsável" : "⏳ Ainda não visualizado"}</div><div>Estado: ${esc(estados[r.status] || r.status || "registrado")}</div></div>`).join("") : '<p class="peq">Nenhum relato enviado.</p>';
+    const hist = S.historico == null ? `<div class="info">${esc(S.manutErro || "Carregando histórico…")}</div>` : S.historico.length ? S.historico.map(r => `<div class="card"><b>${esc(CATEGORIAS[r.categoria] || r.categoria || "Manutenção")}</b>${r.concluido_em ? ` · ${esc(brData(String(r.concluido_em).slice(0, 10)))}` : ""}<br>${esc(r.descricao || "")}</div>`).join("") : '<p class="peq">Nenhuma manutenção concluída encontrada.</p>';
+    return `${topo("📋 Manutenção")}<div id="msg"></div>${locais ? `<h2>No celular</h2>${locais}` : ""}<h2>Meus relatos</h2>${relatos}<h2>Últimas 5 manutenções concluídas · ${esc(S.turno.placa)}</h2>${hist}<button data-act="atualizar-manutencoes">🔄 Atualizar</button>`;
   }
   const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
   const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
@@ -352,18 +426,19 @@
       <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar" disabled>${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
   }
   function vOk() {
-    const tipoTxt = S.tipo === "coleta" ? "Coleta" : "Abastecimento", enviado = S.okNum != null, corrigido = /Correção/.test(S.okMsg);
+    const tipoTxt = S.tipo === "coleta" ? "Coleta" : S.tipo === "manutencao" ? "Manutenção" : "Abastecimento", enviado = S.okNum != null, corrigido = /Correção/.test(S.okMsg);
     const numTxt = S.okNum === "dup" ? "já registrado antes" : "Nº " + S.okNum;
     const caixa = enviado
       ? `<div class="ok-grande"><div class="ok-icone">✅</div><div class="ok-titulo">${corrigido ? "CORREÇÃO ENVIADA" : "REGISTRO ENVIADO"}</div><div class="ok-tipo">${tipoTxt}</div><div class="ok-num">${esc(numTxt)}</div><p class="peq">Guarde este número. Se precisar, informe-o ao responsável.</p></div>`
       : `<div class="ok-grande pend"><div class="ok-icone">📥</div><div class="ok-titulo">AINDA NÃO ENVIADO</div><div class="ok-tipo">${S.okErro ? esc(S.okErro) : "Salvo só neste celular. Será enviado sozinho quando houver sinal."}</div>${online() ? '<button class="pri" data-act="sincronizar" style="margin-top:.8rem">Enviar agora</button>' : ""}<p class="peq">Só vale como enviado quando aparecer o número do registro.</p></div>`;
     return `${barra()}${caixa}${S.okReg ? `<div class="card">${resumo(S.tipo, S.okReg)}</div>` : ""}
-      <p class="peq">Errou algo? Em <b>Meus registros</b> você corrige ou cancela enquanto ele não for aprovado.</p>
+      <p class="peq">${S.tipo === "manutencao" ? 'Acompanhe o relato e as evidências em <b>Manutenção</b>.' : 'Errou algo? Em <b>Meus registros</b> você corrige ou cancela enquanto ele não for aprovado.'}</p>
       <button class="pri" data-act="ir" data-t="${S.tipo}">➕ Fazer outro registro</button><div style="height:.6rem"></div><button data-act="ir" data-t="home">🏠 Início</button>`;
   }
   const STATUS = { pendente: "🟡 Aguardando conferência", aprovado: "🟢 Aprovado", rejeitado: "🔴 Devolvido para correção", cancelado: "⚫ Cancelado" };
   function resumo(tipo, r) {
     if (tipo === "local") return `<b>📍 Localização</b><br>${esc(r.cliente)} · precisão ${esc(r.precisao_m)} m`;
+    if (tipo === "manutencao") return `<b>🔧 Manutenção</b><br>${esc(r.placa || "")} · ${esc(CATEGORIAS[r.categoria] || r.categoria)}<br>${esc(CRITICIDADES[r.criticidade] || r.criticidade)}`;
     return tipo === "abast"
       ? `<b>⛽ Abastecimento</b> · ${brData(r.data_abast)}<br>${esc(r.placa)} · ${esc(r.combustivel)} · R$ ${num(r.valor_total)} · odômetro ${fmtInt(r.odometro)}`
       : `<b>📦 Coleta</b> · ${brData(r.data_coleta)}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>Coletou: 20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}${(r.qtd_ent_20 || 0) + (r.qtd_ent_60 || 0) + (r.qtd_ent_200 || 0) ? `<br>Deixou: 20 L × ${r.qtd_ent_20 || 0} · 60 L × ${r.qtd_ent_60 || 0} · 200 L × ${r.qtd_ent_200 || 0}` : ""}`;
@@ -431,8 +506,8 @@
   }
   function vMeus() {
     const fila = (S._fila || []).filter(i => i.motorista === S.sessao.nome);
-    const locais = fila.map(i => `<div class="card">${resumo(i.tipo, i.reg)}<div class="st">📥 Aguardando envio</div>${i.erro ? `<div class="erro">${esc(i.erro)}</div>` : ""}
-      <div class="linha">${i.tipo === "local" ? "" : `<button data-act="corrigir-fila" data-id="${i.id_cliente}">✏️ Corrigir</button>`}<button class="perigo" data-act="excluir-fila" data-id="${i.id_cliente}">🗑️ Excluir</button></div></div>`).join("");
+    const locais = fila.map(i => `<div class="card">${resumo(i.tipo, Object.assign({ placa: i.placa }, i.reg))}<div class="st">📥 ${i.servidor_id ? "Evidências aguardando envio" : "Aguardando envio"}</div>${i.erro ? `<div class="erro">${esc(i.erro)}</div>` : ""}
+      <div class="linha">${i.tipo === "local" || i.tipo === "manutencao" ? "" : `<button data-act="corrigir-fila" data-id="${i.id_cliente}">✏️ Corrigir</button>`}${i.tipo === "manutencao" && i.servidor_id ? "" : `<button class="perigo" data-act="excluir-fila" data-id="${i.id_cliente}">🗑️ Excluir</button>`}</div></div>`).join("");
     let servidor;
     if (S.meus == null) servidor = `<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
     else if (!S.meus.length) servidor = '<p class="peq">Nenhum registro enviado nos últimos 30 dias.</p>';
@@ -451,11 +526,15 @@
     if (S.ultimosAbast == null) abast = `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`;
     else if (!S.abastVeiculo) abast = '<p class="peq">Selecione um veículo para consultar os abastecimentos.</p>';
     else {
-      const desde = diasAtras(S.abastDias), registros = S.ultimosAbast
-        .filter(r => r.placa === S.abastVeiculo && String(r.data_abast) >= desde)
+      const desde = diasAtras(S.abastDias), todos = S.ultimosAbast
+        .filter(r => r.placa === S.abastVeiculo)
         .sort((a, b) => String(b.data_abast).localeCompare(String(a.data_abast)) || String(b.criado_em || "").localeCompare(String(a.criado_em || "")));
+      const registros = todos.filter(r => String(r.data_abast) >= desde);
+      const fora = !registros.length && todos.length > 0;
+      const exibidos = fora ? todos.slice(0, 1) : registros;
       abast = `${avisoAbast}<div class="dre-per abast-periodo">${[7, 30].map(d => `<button data-act="abast-dias" data-d="${d}" class="${S.abastDias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>
-        ${registros.length ? `<div class="abast-historico">${registros.map(r => `<div class="card abast-hist-card">
+        ${fora ? `<div class="info">Nenhum abastecimento nos últimos ${S.abastDias} dias. Último conhecido, fora do período selecionado:</div>` : ""}
+        ${exibidos.length ? `<div class="abast-historico">${exibidos.map(r => `<div class="card abast-hist-card">
             <div class="abast-hist-top"><b>${brData(String(r.data_abast))}</b><span>${STATUS[r.status] || esc(r.status)}</span></div>
             <div><b>${esc(r.motorista)}</b> abasteceu ${esc(r.combustivel)}${r.posto ? ` no ${esc(r.posto)}` : ""}.</div>
             <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
@@ -467,15 +546,50 @@
   }
 
   function render() {
-    const v = { login: vLogin, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes }[S.tela]
+    const v = { login: vLogin, turnos: vTurnos, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes, manutencoes: vManutencoes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
-        : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk) : vHome);
-    app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co"].forEach(pintarFotos);
+        : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk)
+        : S.tela === "manutencao" ? (S.fase === "form" ? vManutencao : S.fase === "confirmar" ? vConfManutencao : vOk) : vHome);
+    app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co", "ma"].forEach(pintarFotos);
   }
   const msg = (html, tipo) => { const m = $("#msg"); if (m) m.innerHTML = html ? `<div class="${tipo || "erro"}">${html}</div>` : ""; };
 
   // ============================ ações ============================
-  function limparFluxo() { S.rasc = null; S.fotos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
+  function limparFluxo() { S.rasc = null; S.fotos = []; S.anexos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
+  async function carregarTurnos() {
+    S.turnos = null; S.turnoErro = ""; render();
+    const data = S.turnoData || hoje(), chave = `turnos:${S.sessao.nome}:${data}`;
+    const sessao = S.sessao;
+    try {
+      const turnos = await rpc("app_turnos", { p_token: token(), p_data: data });
+      if (!Array.isArray(turnos)) throw new Error("Resposta inválida dos turnos.");
+      await idb.put("cache", { k: chave, v: turnos });
+      if (S.sessao !== sessao || S.turnoData !== data) return;
+      S.turnos = turnos;
+    } catch (e) {
+      if (S.sessao !== sessao || S.turnoData !== data) return;
+      if (e.message === "sessao_invalida") return sessaoExpirada();
+      const cache = e.rede ? await idb.get("cache", chave) : null;
+      S.turnos = cache ? cache.v : [];
+      S.turnoErro = cache ? "Sem sinal: mostrando turnos salvos anteriormente, sujeitos a alteração." : msgErro(e);
+    }
+    if (S.tela === "turnos") render();
+  }
+  async function carregarManutencoes() {
+    S.manutencoes = null; S.historico = null; S.manutErro = ""; render();
+    try {
+      const [relatos, historico] = await Promise.all([
+        rpc("app_manutencoes", { p_token: token() }),
+        rpc("app_historico_manutencao", { p_token: token(), p_placa: S.turno.placa })
+      ]);
+      if (!Array.isArray(relatos) || !Array.isArray(historico)) throw new Error("Resposta inválida do histórico.");
+      S.manutencoes = relatos; S.historico = historico.slice(0, 5);
+    } catch (e) {
+      if (e.message === "sessao_invalida") return sessaoExpirada();
+      S.manutErro = e.rede ? "Sem sinal: conecte-se para consultar relatos e histórico." : msgErro(e);
+    }
+    if (S.tela === "manutencoes") render();
+  }
   async function carregarMeus() {
     try { S.meus = await rpc("app_meus", { p_token: token() }); S.meusErro = ""; }
     catch (e) { S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
@@ -501,8 +615,9 @@
     } finally { S.ultimosAbastCarregando = false; }
   }
   async function irPara(t) {
-    limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta") ? t : S.tipo;
+    limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta" || t === "manutencao") ? t : S.tipo;
     S._fila = await contarFila();
+    if (t === "manutencoes") { await carregarManutencoes(); return; }
     if (t === "meus" || t === "dre" || t === "frota") {
       if (t === "meus" || t === "dre") {
         S.meus = null; S.meusErro = online() ? "Carregando…" : "Sem sinal: não consigo buscar os registros já enviados.";
@@ -593,6 +708,20 @@
       S.fase = "ok"; S._fila = await contarFila(); render();
     } catch (e) { btn.disabled = false; msg(esc(msgErro(e)) + (e.rede ? " A correção de um registro já enviado precisa de internet." : "")); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
+  async function salvarManutencao() {
+    if (!$("#cf_ok").checked) return msg("Marque a confirmação para continuar.");
+    const btn = $("#btn_salvar"); btn.disabled = true;
+    const id = uuid(), r = S.rasc;
+    try {
+      await idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: S.sessao.nome, registrado_em: new Date().toISOString(), placa: S.turno.placa, reg: r, anexos: S.anexos.slice(), erro: null });
+      S.okIdc = id; S.okNum = null; S.okReg = Object.assign({ placa: S.turno.placa }, r); S.okErro = "";
+      S._fila = await contarFila(); await sincronizar();
+      const ainda = await idb.get("fila", id);
+      if (ainda) S.okErro = ainda.erro || (ainda.servidor_id ? "Relato enviado; evidências ainda aguardam envio." : "");
+      else { S.okNum = S.protocolos[id]; S.okIdc = null; }
+      if (S.sessao) { S.fase = "ok"; render(); }
+    } catch (e) { btn.disabled = false; msg(esc(e.message || "Não foi possível guardar o relato no celular.")); }
+  }
   function abrirEdicao(tipo, r, edit, fotos) { limparFluxo(); S.tela = tipo; S.tipo = tipo; S.rasc = r; S.edit = edit; S.fotos = fotos || []; S.fase = "form"; render(); }
 
   const acoes = {
@@ -604,14 +733,39 @@
         const r = await rpc("app_login", { p_nome: nome, p_pin: pin });
         if (!r.ok) return msg(esc(r.msg));
         S.sessao = { token: r.token, nome: r.nome }; gravarSessao(S.sessao, $("#lg_manter").checked); S.aviso = "";
-        await atualizarListas(); S._fila = await contarFila(); S.tela = "home"; render(); sincronizar();
+        await atualizarListas(); if (!S.sessao) return;
+        S._fila = await contarFila(); S.turno = null; S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); sincronizar();
       } catch (e) { msg(esc(msgErro(e))); }
     },
     async trocar() {
+      if (S.sync) { alert("Aguarde o envio terminar antes de trocar de motorista."); return; }
       await contarFila();
       if (S.filaN && !confirm(`Você tem ${S.filaN} registro(s) ainda não enviados. Se trocar agora, eles ficam guardados no celular até você entrar de novo com sinal. Trocar mesmo assim?`)) return;
-      limparSessao(); S.sessao = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
+      limparSessao(); S.sessao = null; S.turno = null; S.turnos = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
+    async "recarregar-turnos"() { await carregarTurnos(); },
+    "selecionar-turno"() {
+      const turno = (S.turnos || []).find(t => String(t.id) === $("#turno").value);
+      if (!turno) return msg("Selecione seu turno.");
+      S.turno = turno; S.abastVeiculo = turno.placa; S.tela = "home"; render();
+    },
+    async "trocar-turno"() { limparFluxo(); S.turno = null; S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); },
+    async "atualizar-manutencoes"() { await carregarManutencoes(); },
+    "rm-anexo"(a) { S.anexos.splice(Number(a.dataset.i), 1); $("#ma_anexos").innerHTML = listarAnexos(); },
+    "validar-manutencao"() {
+      if (S.anexoCarregando) return msg("Aguarde a verificação do arquivo.");
+      const odometro = parseIntBR($("#ma_odo").value), horimetro = parseNum($("#ma_hora").value);
+      const categoria = $("#ma_cat").value, criticidade = $('input[name="criticidade"]:checked');
+      const descricao = $("#ma_desc").value.trim(), erros = [];
+      if (odometro == null || !Number.isSafeInteger(odometro)) erros.push("Informe o odômetro.");
+      if (horimetro == null || !Number.isFinite(horimetro)) erros.push("Informe o horímetro.");
+      if (!CATEGORIAS[categoria]) erros.push("Selecione o sistema.");
+      if (!criticidade || !CRITICIDADES[criticidade.value]) erros.push("Selecione a criticidade.");
+      if (!descricao) erros.push("Descreva o problema.");
+      if (erros.length) return msg(erros.join("<br>"));
+      S.rasc = { turno_id: S.turno.id, odometro, horimetro, categoria, criticidade: criticidade.value, descricao }; S.fase = "confirmar"; render();
+    },
+    "salvar-manutencao"() { return salvarManutencao(); },
     ir(a) { irPara(a.dataset.t); },
     "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
     "abast-dias"(a) { S.abastDias = Number(a.dataset.d); render(); },
@@ -641,6 +795,7 @@
       abrirEdicao(it.tipo, Object.assign({}, it.reg), { origem: "fila", id: it.id_cliente, registrado_em: it.registrado_em }, it.fotos || (it.foto ? [it.foto] : []));
     },
     async "excluir-fila"(a) {
+      if (S.sync) return msg("Aguarde o envio terminar para excluir.");
       if (!confirm("Excluir este registro do celular? Ele não será enviado.")) return;
       await idb.del("fila", a.dataset.id); S._fila = await contarFila(); render();
     },
@@ -675,6 +830,26 @@
   });
   document.addEventListener("change", async ev => {
     const el = ev.target;
+    if (el.id === "turno_data") { if (el.value) { S.turnoData = el.value; await carregarTurnos(); } return; }
+    if ((el.id === "ma_fotos" || el.id === "ma_video") && el.files && el.files.length) {
+      if (S.anexoCarregando) { el.value = ""; return msg("Aguarde a verificação do arquivo anterior."); }
+      const video = el.id === "ma_video", arquivos = Array.from(el.files); el.disabled = true;
+      S.anexoCarregando = true;
+      try {
+        for (const f of arquivos) {
+          if (video ? S.anexos.some(a => a.tipo === "video") : S.anexos.filter(a => a.tipo === "foto").length >= MAX_FOTOS) throw new Error(video ? "Remova o vídeo anterior antes de adicionar outro." : "Limite de 5 fotos por relato.");
+          const permitidos = video ? ["video/mp4", "video/webm", "video/quicktime"] : ["image/jpeg", "image/png", "image/webp"];
+          if (!permitidos.includes(f.type)) throw new Error("Formato de arquivo não aceito. Use JPEG, PNG, WebP, MP4, WebM ou MOV.");
+          if (!f.size || f.size > (video ? 20 : 5) * 1024 * 1024) throw new Error(video ? "O vídeo deve ter até 20 MiB." : "Cada foto deve ter até 5 MiB.");
+          if (video) await duracaoVideo(f);
+          if (S.tela !== "manutencao" || S.fase !== "form") throw new Error("Volte ao relato para adicionar a evidência.");
+          S.anexos.push({ id: uuid(), tipo: video ? "video" : "foto", mime: f.type, nome: f.name, blob: f, proximo: 0 });
+        }
+        msg("");
+      } catch (e) { msg(esc(e.message)); }
+      finally { S.anexoCarregando = false; el.value = ""; el.disabled = false; const lista = $("#ma_anexos"); if (lista) lista.innerHTML = listarAnexos(); }
+      return;
+    }
     if (el.id === "abast_veiculo") { S.abastVeiculo = el.value; render(); }
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
     if (el.id === "co_cli") atualizarNav();
@@ -698,21 +873,21 @@
   // ============================ início ============================
   const CSS_EXTRA = `#btn_salvar{background:#1f7a4d!important;border-color:#1f7a4d!important;color:#fff!important}
 #btn_salvar:disabled{background:#c9ced3!important;border-color:#c9ced3!important;color:#6b7280!important;cursor:not-allowed}
-.ok-grande{text-align:center;background:#e8f6ee;border:2px solid #1f7a4d;border-radius:16px;padding:1.4rem 1rem;margin:.8rem 0;color:#14532d}
-.ok-grande.pend{background:#fff6e0;border-color:#d99a00;color:#7a4b00}
+.ok-grande{text-align:center;background:var(--okBg);border:2px solid var(--ok);border-radius:16px;padding:1.4rem 1rem;margin:.8rem 0;color:var(--ok)}
+.ok-grande.pend{background:var(--warnBg);border-color:var(--warn);color:var(--warn)}
 .ok-icone{font-size:3.4rem;line-height:1}.ok-titulo{font-size:1.5rem;font-weight:800;margin:.4rem 0}.ok-tipo{font-size:1rem}
 .ok-num{font-size:2.8rem;font-weight:800;margin:.3rem 0}
 .dre-per{display:flex;gap:.5rem;margin:.6rem 0}.dre-per button{flex:1;min-height:2.6rem}
 .dre-per button.on{background:#1f7a4d!important;color:#fff!important;border-color:#1f7a4d!important}
 .dre-kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin:.5rem 0}
-.dre-kpi div{background:#fff;border:1px solid #e3e7e5;border-radius:12px;padding:.6rem .3rem;text-align:center;color:#1b2b24}
+.dre-kpi div{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:.6rem .3rem;text-align:center;color:var(--txt)}
 .dre-kpi b{display:block;font-size:1rem}.dre-kpi span{font-size:.68rem;opacity:.75}
-.dre-graf{display:flex;align-items:flex-end;gap:4px;height:140px;border-bottom:1px solid #cfd6d2;padding-top:.3rem}
+.dre-graf{display:flex;align-items:flex-end;gap:4px;height:140px;border-bottom:1px solid var(--bd);padding-top:.3rem}
 .dre-col{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;min-width:0}
 .dre-col i{display:block;width:100%;background:#1f7a4d;border-radius:4px 4px 0 0}.dre-col.baixo i{background:#d99a00}
 .dre-col em{font-style:normal;font-size:.58rem;opacity:.8}
 .dre-eixo{display:flex;gap:4px}.dre-eixo span{flex:1;text-align:center;font-size:.6rem;opacity:.7}
-.dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid #e3e7e5;text-align:right}
+.dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid var(--bd);text-align:right}
 .dre-tab th:first-child,.dre-tab td:first-child{text-align:left}
 .abast-historico{display:grid;gap:.2rem}
 .abast-periodo{margin:.5rem 0}
@@ -724,15 +899,28 @@
 .abast-hist-dados span{background:var(--bg);border-radius:9px;padding:.5rem .3rem;text-align:center}
 .abast-hist-dados b,.abast-hist-dados small{display:block}
 .abast-hist-dados b{font-size:.95rem}
-.abast-hist-dados small{color:var(--mut);font-size:.72rem}`;
+.abast-hist-dados small{color:var(--mut);font-size:.72rem}
+.tema{display:block;width:auto;min-height:2.6rem;margin:calc(env(safe-area-inset-top,0px) + 8px) auto 0}`;
   async function iniciar() {
     document.head.appendChild(Object.assign(document.createElement("style"), { textContent: CSS_EXTRA }));
+    const tema = $("#tema"), preferencia = window.matchMedia("(prefers-color-scheme: dark)");
+    function aplicarTema() {
+      const salvo = localStorage.getItem("frota_tema");
+      const escuro = salvo === "escuro" || (salvo !== "claro" && preferencia.matches);
+      document.documentElement.dataset.tema = escuro ? "escuro" : "claro";
+      tema.textContent = escuro ? "☀️ Tema claro" : "🌙 Tema escuro";
+      tema.setAttribute("aria-label", escuro ? "Ativar tema claro" : "Ativar tema escuro");
+    }
+    tema.addEventListener("click", () => { localStorage.setItem("frota_tema", document.documentElement.dataset.tema === "escuro" ? "claro" : "escuro"); aplicarTema(); });
+    if (preferencia.addEventListener) preferencia.addEventListener("change", aplicarTema);
+    else if (preferencia.addListener) preferencia.addListener(aplicarTema);
+    aplicarTema();
     if ("serviceWorker" in navigator && /^https?:$/.test(location.protocol)) navigator.serviceWorker.register("sw.js").catch(() => { });
     const c = await idb.get("cache", "nomes"); S.nomes = c ? c.v : [];
     const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
     const la = await idb.get("cache", "ultimos-abastecimentos"); S.ultimosAbast = la ? la.v : null;
     S.sessao = lerSessao();
-    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.tela = "home"; render(); atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); }
+    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); if (S.sessao) { atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); } }
     else render();
     await carregarNomes(); if (S.tela === "login") render();
   }
