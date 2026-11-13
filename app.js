@@ -110,6 +110,89 @@
   }
   function limparSessao() { localStorage.removeItem("frota_sessao"); sessionStorage.removeItem("frota_sessao"); }
   const token = () => S.sessao && S.sessao.token;
+  const telasFluxo = ["abast", "coleta", "manutencao"];
+  const telasPermitidas = ["veiculos", "home", "abast", "coleta", "manutencao", "manutencoes", "meus", "frota", "dre", "clientes"];
+  const chaveRascunho = tela => tela + ":" + (S.veiculo || "");
+  let escritaContexto = Promise.resolve();
+  function camposAtuais() {
+    const campos = {};
+    app().querySelectorAll("input,select,textarea").forEach(el => {
+      if (el.type === "file" || el.type === "password" || el.id === "cf_ok") return;
+      const chave = el.type === "radio" ? `radio:${el.name}:${el.value}` : el.id;
+      if (chave) campos[chave] = el.type === "checkbox" || el.type === "radio" ? el.checked : el.value;
+    });
+    return campos;
+  }
+  function capturarRascunho() {
+    if (!telasFluxo.includes(S.tela) || S.fase === "ok") return;
+    if (S.fase === "form" && (S.tela === "abast" || S.tela === "coleta") && (!S.listas || !S.listas.veiculos || !S.listas.veiculos.length || (S.tela === "abast" && (!S.listas.combustiveis || !S.listas.combustiveis.length)))) return;
+    if (!S.rascunhoId) S.rascunhoId = uuid();
+    S.rascunhos = S.rascunhos || {};
+    S.rascunhos[chaveRascunho(S.tela)] = {
+      id: S.rascunhoId, fase: S.fase, rasc: S.rasc, fotos: S.fotos.slice(), anexos: S.anexos.slice(),
+      edit: S.edit, campos: S.fase === "form" ? camposAtuais() : {}
+    };
+  }
+  function aplicarCampos(campos) {
+    if (!campos) return;
+    app().querySelectorAll("input,select,textarea").forEach(el => {
+      const chave = el.type === "radio" ? `radio:${el.name}:${el.value}` : el.id;
+      if (!chave || !(chave in campos)) return;
+      if (el.type === "checkbox" || el.type === "radio") el.checked = campos[chave];
+      else if (el.type !== "file" && el.type !== "password") el.value = campos[chave];
+      if (el.tagName === "SELECT" && el.dataset.act === "outro") {
+        const alvo = $("#" + el.dataset.alvo); if (alvo) alvo.style.display = el.value === OUTRO ? "" : "none";
+      }
+    });
+    atualizarNav();
+  }
+  function guardarContexto(capturar) {
+    if (!S.sessao || S.restaurandoContexto) return;
+    if (capturar) capturarRascunho();
+    const chave = "contexto:" + S.sessao.nome;
+    const resultado = telasFluxo.includes(S.tela) && S.fase === "ok"
+      ? { tipo: S.tipo, okMsg: S.okMsg, okNum: S.okNum, okIdc: S.okIdc, okReg: S.okReg, okErro: S.okErro } : null;
+    const valor = { tela: S.tela, resultado, veiculo: S.veiculo, abastVeiculo: S.abastVeiculo, abastDias: S.abastDias,
+      dreDias: S.dreDias, rascunhos: Object.assign({}, S.rascunhos || {}) };
+    escritaContexto = escritaContexto.catch(() => {}).then(() => idb.put("cache", { k: chave, v: valor }));
+    escritaContexto.then(() => {
+      if (S.sessao && "contexto:" + S.sessao.nome === chave && S.erroContexto) { S.erroContexto = ""; const aviso = $("#erro-contexto"); if (aviso) { aviso.textContent = ""; aviso.className = ""; } }
+    }, () => {
+      if (S.sessao && "contexto:" + S.sessao.nome === chave) {
+        S.erroContexto = "Não foi possível salvar o progresso neste celular. Mantenha o app aberto e libere espaço antes de continuar.";
+        const aviso = $("#erro-contexto"); if (aviso) { aviso.textContent = S.erroContexto; aviso.className = "erro"; }
+      }
+    });
+    return escritaContexto;
+  }
+  function carregarRascunho(tela) {
+    const r = (S.rascunhos || {})[chaveRascunho(tela)];
+    if (!r) return;
+    S.rascunhoId = r.id || uuid(); S.fase = r.fase; S.rasc = r.rasc; S.fotos = r.fotos || []; S.anexos = r.anexos || []; S.edit = r.edit;
+    S.camposRestaurar = r.campos;
+  }
+  async function restaurarContexto() {
+    S.rascunhos = {}; S.veiculo = ""; S.tela = "veiculos";
+    try {
+      const c = await idb.get("cache", "contexto:" + S.sessao.nome);
+      if (!c || !c.v) return;
+      const v = c.v;
+      S.rascunhos = v.rascunhos || {};
+      S.veiculo = typeof v.veiculo === "string" ? v.veiculo : "";
+      S.abastVeiculo = v.abastVeiculo || S.veiculo; S.abastDias = v.abastDias || 7; S.dreDias = v.dreDias || 30;
+      S.tela = telasPermitidas.includes(v.tela) && (v.tela === "veiculos" || S.veiculo) ? v.tela : "veiculos";
+      if (telasFluxo.includes(S.tela)) {
+        S.tipo = S.tela;
+        if (v.resultado && v.resultado.tipo === S.tela) {
+          S.fase = "ok";
+          for (const k of ["okMsg", "okNum", "okIdc", "okReg", "okErro"]) S[k] = v.resultado[k];
+          if (S.okIdc && !(S._fila || []).some(i => i.id_cliente === S.okIdc)) {
+            S.okErro = "Não foi possível confirmar o envio. Consulte seus registros ou avise o responsável.";
+          }
+        } else carregarRascunho(S.tela);
+      }
+    } catch (e) { S.erroContexto = "Não foi possível recuperar o progresso salvo neste celular."; }
+  }
 
   async function contarFila() {
     const todos = await idb.all("fila");
@@ -142,7 +225,7 @@
     return true;
   }
   function sessaoExpirada() {
-    limparSessao(); S.sessao = null; S.tela = "login"; S.aviso = "Sua sessão expirou. Entre de novo para continuar. Seus registros salvos no celular continuam guardados.";
+    limparSessao(); S.sessao = null; S.veiculo = ""; S.rascunhos = {}; S.meus = null; S.manutencoes = null; S.historico = null; S.protocolos = {}; limparFluxo(); S.tela = "login"; S.aviso = "Sua sessão expirou. Entre de novo para continuar. Seus registros salvos no celular continuam guardados.";
     render();
   }
   function ultimoOdo(placa, excluirId) {
@@ -173,7 +256,7 @@
           let resp; if (it.tipo === "manutencao") resp = await enviarManutencao(it);
           else if (it.tipo === "local") resp = await rpc("app_enviar_local", { p_token: token(), p_reg: regEnv });
           else resp = await rpc("app_enviar", { p_token: token(), p_tabela: it.tipo, p_reg: regEnv, p_foto: null, p_fotos: it.fotos || (it.foto ? [it.foto] : []) });
-          S.protocolos[it.id_cliente] = resp && resp.id != null ? resp.id : "dup"; await idb.del("fila", it.id_cliente); enviados++;
+          S.protocolos[it.id_cliente] = resp && resp.duplicado ? "dup" : resp && resp.id != null ? resp.id : "dup"; await idb.del("fila", it.id_cliente); enviados++;
           if (it.tipo === "abast") await bumpUltimo(it.reg.placa, it.reg.odometro);
         } catch (e) {
           if (e.rede) { semRede = true; break; }
@@ -183,7 +266,7 @@
       }
     } finally { S.sync = false; S._fila = await contarFila(); }
     if (expirou) return sessaoExpirada();
-    if (S.fase === "ok" && S.okIdc && S.protocolos[S.okIdc] !== undefined) { S.okNum = S.protocolos[S.okIdc]; S.okIdc = null; S.okErro = ""; render(); }
+    if (S.fase === "ok" && S.okIdc && S.protocolos[S.okIdc] !== undefined) { S.okNum = S.protocolos[S.okIdc]; if (S.okNum === "dup") S.okReg = null; S.okIdc = null; S.okErro = ""; render(); }
     if (manual || falhas) {
       S.syncMsg = semRede ? { t: "Sem sinal: não consegui enviar agora. Tento de novo sozinho.", c: "aviso" }
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
@@ -204,6 +287,7 @@
       const resp = await rpc("app_enviar_manutencao", { p_token: token(), p_reg: Object.assign({}, it.reg, { id_cliente: it.id_cliente }) });
       if (!resp || !resp.ok || resp.id == null) throw new Error("Resposta inválida ao enviar relato.");
       it.servidor_id = resp.id;
+      it.duplicado = !!resp.duplicado;
       await idb.put("fila", it);
     }
     for (const anexo of it.anexos || []) {
@@ -216,7 +300,7 @@
         await idb.put("fila", it);
       }
     }
-    return { id: it.servidor_id };
+    return { id: it.servidor_id, duplicado: it.duplicado };
   }
   const listarAnexos = () => S.anexos.map((a, i) => `<div class="card">${a.tipo === "foto" ? "📷" : "🎬"} ${esc(a.nome)} <button data-act="rm-anexo" data-i="${i}">Remover</button></div>`).join("");
   function duracaoVideo(file) {
@@ -305,7 +389,7 @@
     const msgEnvio = S.syncMsg ? `<div class="${S.syncMsg.c}">${esc(S.syncMsg.t)}</div>` : "";
     const msgErroFila = comErro.length && !(S.syncMsg && S.syncMsg.c === "erro")
       ? `<div class="erro">⚠️ ${comErro.length} registro(s) não aceito(s) pelo servidor: ${esc(comErro[0].erro)}<br>Consulte <b>Meus registros</b> ou <b>Manutenção</b> e avise o responsável se necessário. Toque em <b>Enviar agora</b> para tentar de novo.</div>` : "";
-    return `<div class="barra"><div>👤 <b>${esc(S.sessao.nome)}</b>${chip}</div><button data-act="trocar">Trocar</button></div>` +
+    return `<div class="barra"><div>👤 <b>${esc(S.sessao.nome)}</b>${chip}</div><button data-act="trocar">Trocar</button></div><div id="erro-contexto" class="${S.erroContexto ? "erro" : ""}" role="alert">${esc(S.erroContexto || "")}</div>` +
       (n ? `<div class="aviso">📥 ${n} registro(s) aguardando envio.${online() ? ' <button data-act="sincronizar">Enviar agora</button>' : " Serão enviados quando houver sinal."}</div>` : "") + msgEnvio + msgErroFila;
   }
   function vLogin() {
@@ -333,20 +417,20 @@
   }
   function vManutencao() {
     const r = S.rasc || {};
-    return `${topo("🔧 Relatar manutenção")}<div class="card"><b>Caminhão:</b> ${esc(S.veiculo)}</div>
+    return `${topo("🔧 Relatar manutenção", true)}<div class="card"><b>Caminhão:</b> ${esc(S.veiculo)}</div>
       <label for="ma_odo">Odômetro (km)</label><input id="ma_odo" data-mask="int" value="${r.odometro != null ? fmtInt(r.odometro) : ""}">
       <label for="ma_hora">Horímetro (horas)</label><input id="ma_hora" data-mask="dec" value="${r.horimetro != null ? fmtDec(r.horimetro) : ""}">
       <label for="ma_cat">Sistema</label><select id="ma_cat"><option value="">— selecione —</option>${Object.entries(CATEGORIAS).map(([v, texto]) => `<option value="${v}" ${r.categoria === v ? "selected" : ""}>${esc(texto)}</option>`).join("")}</select>
       <fieldset><legend>Nível de criticidade</legend>${Object.entries(CRITICIDADES).map(([v, texto]) => `<label class="chk"><input type="radio" name="criticidade" value="${v}" ${r.criticidade === v ? "checked" : ""}> ${texto}</label>`).join("")}</fieldset>
       <label for="ma_desc">Descreva o problema</label><textarea id="ma_desc" maxlength="2000">${esc(r.descricao || "")}</textarea>
-      <label for="ma_fotos">Fotos (opcional, até 5, 5 MiB cada)</label><input type="file" id="ma_fotos" accept="image/jpeg,image/png,image/webp" multiple>
+      <label>Fotos (opcional, até 5, 5 MiB cada)</label><div class="linha"><button data-act="foto" data-alvo="ma_cam">📷 Tirar foto</button><button data-act="foto" data-alvo="ma_fotos">🖼️ Galeria</button></div>
+      <input type="file" id="ma_cam" accept="image/jpeg,image/png,image/webp" capture="environment" hidden><input type="file" id="ma_fotos" accept="image/jpeg,image/png,image/webp" multiple hidden>
       <label for="ma_video">Vídeo curto (opcional, até 15 segundos e 20 MiB)</label><input type="file" id="ma_video" accept="video/mp4,video/webm,video/quicktime"><div id="ma_anexos">${listarAnexos()}</div>
-      <div id="msg"></div><button class="pri" data-act="validar-manutencao">Continuar</button>
-      <button data-act="ir" data-t="manutencoes">📋 Acompanhar relatos e histórico</button>`;
+      <div id="msg"></div><button class="pri" data-act="validar-manutencao">Continuar</button>`;
   }
   function vConfManutencao() {
     const r = S.rasc;
-    return `${topo("Confira o relato")}<div class="card"><b>Caminhão:</b> ${esc(r.placa)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km<br><b>Horímetro:</b> ${fmtDec(r.horimetro)} h<br><b>Sistema:</b> ${esc(CATEGORIAS[r.categoria])}<br><b>Criticidade:</b> ${esc(CRITICIDADES[r.criticidade])}<br><b>Problema:</b> ${esc(r.descricao)}</div>
+    return `${topo("Confira o relato", true)}<div class="card"><b>Caminhão:</b> ${esc(r.placa)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km<br><b>Horímetro:</b> ${fmtDec(r.horimetro)} h<br><b>Sistema:</b> ${esc(CATEGORIAS[r.categoria])}<br><b>Criticidade:</b> ${esc(CRITICIDADES[r.criticidade])}<br><b>Problema:</b> ${esc(r.descricao)}</div>
       <p>${S.anexos.length} evidência(s) selecionada(s)</p>
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo os dados do relato</label><div id="msg"></div><div class="linha"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar-manutencao" disabled>✅ Salvar relato</button></div>`;
   }
@@ -374,7 +458,7 @@
       <input type="file" accept="image/*" capture="environment" id="${pref}_cam" hidden><input type="file" accept="image/*" multiple id="${pref}_gal" hidden>
       <div id="${pref}_prev"></div>`;
   }
-  const topo = titulo => `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>${titulo}</h2>` +
+  const topo = (titulo, relatos) => `${barra()}<div class="topo-acoes"><button data-act="ir" data-t="home">← Início</button>${relatos ? '<button data-act="ir" data-t="manutencoes">📋 Relatos</button>' : ""}</div><h2>${titulo}</h2>` +
     (S.edit ? '<div class="info">✏️ Você está corrigindo um registro. Ao salvar, ele volta para conferência.</div>' : "");
 
   function vAbast() {
@@ -432,7 +516,7 @@
     const tipoTxt = S.tipo === "coleta" ? "Coleta" : S.tipo === "manutencao" ? "Manutenção" : "Abastecimento", enviado = S.okNum != null, corrigido = /Correção/.test(S.okMsg);
     const numTxt = S.okNum === "dup" ? "já registrado antes" : "Nº " + S.okNum;
     const caixa = enviado
-      ? `<div class="ok-grande"><div class="ok-icone">✅</div><div class="ok-titulo">${corrigido ? "CORREÇÃO ENVIADA" : "REGISTRO ENVIADO"}</div><div class="ok-tipo">${tipoTxt}</div><div class="ok-num">${esc(numTxt)}</div><p class="peq">Guarde este número. Se precisar, informe-o ao responsável.</p></div>`
+      ? `<div class="ok-grande"><div class="ok-icone">✅</div><div class="ok-titulo">${S.okNum === "dup" ? "REGISTRO JÁ EXISTIA" : corrigido ? "CORREÇÃO ENVIADA" : "REGISTRO ENVIADO"}</div><div class="ok-tipo">${tipoTxt}</div><div class="ok-num">${esc(numTxt)}</div><p class="peq">${S.okNum === "dup" ? "Confira os dados em Meus registros ou Relatos; alterações neste rascunho não foram enviadas." : "Guarde este número. Se precisar, informe-o ao responsável."}</p></div>`
       : `<div class="ok-grande pend"><div class="ok-icone">📥</div><div class="ok-titulo">AINDA NÃO ENVIADO</div><div class="ok-tipo">${S.okErro ? esc(S.okErro) : "Salvo só neste celular. Será enviado sozinho quando houver sinal."}</div>${online() ? '<button class="pri" data-act="sincronizar" style="margin-top:.8rem">Enviar agora</button>' : ""}<p class="peq">Só vale como enviado quando aparecer o número do registro.</p></div>`;
     return `${barra()}${caixa}${S.okReg ? `<div class="card">${resumo(S.tipo, S.okReg)}</div>` : ""}
       <p class="peq">${S.tipo === "manutencao" ? 'Acompanhe o relato e as evidências em <b>Manutenção</b>.' : 'Errou algo? Em <b>Meus registros</b> você corrige ou cancela enquanto ele não for aprovado.'}</p>
@@ -549,16 +633,23 @@
   }
 
   function render() {
+    let campos = S.camposRestaurar;
+    if (!campos && S.sessao && S.tela === S.renderTela && S.fase === S.renderFase &&
+        S.rascunhoId && S.rascunhoId === S.renderRascunhoId && telasFluxo.includes(S.tela) && S.fase === "form") campos = camposAtuais();
     const v = { login: vLogin, veiculos: vVeiculos, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes, manutencoes: vManutencoes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk)
         : S.tela === "manutencao" ? (S.fase === "form" ? vManutencao : S.fase === "confirmar" ? vConfManutencao : vOk) : vHome);
     app().innerHTML = v(); aplicarMascaras(app()); ["ab", "co", "ma"].forEach(pintarFotos);
+    if (campos) aplicarCampos(campos);
+    S.camposRestaurar = null;
+    guardarContexto(true);
+    S.renderTela = S.tela; S.renderFase = S.fase; S.renderRascunhoId = S.rascunhoId;
   }
   const msg = (html, tipo) => { const m = $("#msg"); if (m) m.innerHTML = html ? `<div class="${tipo || "erro"}">${html}</div>` : ""; };
 
   // ============================ ações ============================
-  function limparFluxo() { S.rasc = null; S.fotos = []; S.anexos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
+  function limparFluxo() { S.rasc = null; S.rascunhoId = null; S.camposRestaurar = null; S.fotos = []; S.anexos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
   async function carregarManutencoes() {
     const placa = S.veiculo, sessao = S.sessao;
     const requisicao = S.manutRequisicao = (S.manutRequisicao || 0) + 1;
@@ -579,8 +670,9 @@
     if (S.tela === "manutencoes") render();
   }
   async function carregarMeus() {
-    try { S.meus = await rpc("app_meus", { p_token: token() }); S.meusErro = ""; }
-    catch (e) { S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
+    const sessao = S.sessao;
+    try { const dados = await rpc("app_meus", { p_token: token() }); if (S.sessao === sessao) { S.meus = dados; S.meusErro = ""; } }
+    catch (e) { if (S.sessao !== sessao) return; S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
   async function carregarUltimosAbast() {
     if (!online()) {
@@ -603,7 +695,8 @@
     } finally { S.ultimosAbastCarregando = false; }
   }
   async function irPara(t) {
-    limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta" || t === "manutencao") ? t : S.tipo;
+    capturarRascunho(); limparFluxo(); S.syncMsg = null; S.tela = t; S.tipo = (t === "abast" || t === "coleta" || t === "manutencao") ? t : S.tipo;
+    if (telasFluxo.includes(t)) carregarRascunho(t);
     S._fila = await contarFila();
     if (t === "manutencoes") { await carregarManutencoes(); return; }
     if (t === "meus" || t === "dre" || t === "frota") {
@@ -685,32 +778,39 @@
         await rpc("app_corrigir", { p_token: token(), p_tabela: tipo, p_id: S.edit.id, p_reg: payload(tipo, r), p_foto: null, p_fotos: S.fotos });
         S.okMsg = "✅ Correção enviada!"; S.okNum = S.edit.id; S.okReg = payload(tipo, r); S.okIdc = null; S.okErro = "";
       } else {
-        const id = S.edit && S.edit.origem === "fila" ? S.edit.id : uuid();
-        await idb.put("fila", { id_cliente: id, tipo, motorista: S.sessao.nome, registrado_em: (S.edit && S.edit.registrado_em) || new Date().toISOString(), reg: payload(tipo, r), fotos: S.fotos.slice(), erro: null });
+        await guardarContexto(true);
+        const id = S.edit && S.edit.origem === "fila" ? S.edit.id : S.rascunhoId;
+        const existente = await idb.get("fila", id);
+        if (existente && !(S.edit && S.edit.origem === "fila")) { btn.disabled = false; return msg("Este registro já está na fila. Consulte Meus registros antes de enviar novamente."); }
+        if (!existente || (S.edit && S.edit.origem === "fila")) await idb.put("fila", { id_cliente: id, tipo, motorista: S.sessao.nome, registrado_em: (S.edit && S.edit.registrado_em) || new Date().toISOString(), reg: payload(tipo, r), fotos: S.fotos.slice(), erro: null });
         S.okIdc = id; S.okNum = null; S.okReg = payload(tipo, r);
         S._fila = await contarFila(); await sincronizar();
         const ainda = await idb.get("fila", id);
-        S.okErro = ainda ? (ainda.erro || "") : ""; if (!ainda) { S.okNum = S.protocolos[id] !== undefined ? S.protocolos[id] : "dup"; S.okIdc = null; }
+        S.okErro = ainda ? (ainda.erro || "") : ""; if (!ainda) { S.okNum = S.protocolos[id] !== undefined ? S.protocolos[id] : "dup"; if (S.okNum === "dup") S.okReg = null; S.okIdc = null; }
         S.okMsg = ainda ? "📥 Salvo no celular! Será enviado automaticamente quando houver sinal." : "✅ Enviado!";
       }
+      if (S.rascunhos) delete S.rascunhos[chaveRascunho(tipo)];
       S.fase = "ok"; S._fila = await contarFila(); render();
-    } catch (e) { btn.disabled = false; msg(esc(msgErro(e)) + (e.rede ? " A correção de um registro já enviado precisa de internet." : "")); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
+    } catch (e) { btn.disabled = false; msg(esc(e instanceof ApiErro ? msgErro(e) : "Não foi possível guardar o registro neste celular. Libere espaço e tente novamente.") + (e.rede ? " A correção de um registro já enviado precisa de internet." : "")); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
   async function salvarManutencao() {
     if (!$("#cf_ok").checked) return msg("Marque a confirmação para continuar.");
     const btn = $("#btn_salvar"); btn.disabled = true;
-    const id = uuid(), r = Object.assign({}, S.rasc, { data: hoje() });
+    const r = Object.assign({}, S.rasc, { data: hoje() });
     try {
-      await idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: S.sessao.nome, registrado_em: new Date().toISOString(), placa: r.placa, reg: r, anexos: S.anexos.slice(), erro: null });
+      await guardarContexto(true);
+      const id = S.rascunhoId, existente = await idb.get("fila", id);
+      if (existente) { btn.disabled = false; return msg("Este relato já está na fila. Consulte Relatos antes de enviar novamente."); }
+      if (!existente) await idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: S.sessao.nome, registrado_em: new Date().toISOString(), placa: r.placa, reg: r, anexos: S.anexos.slice(), erro: null });
       S.okIdc = id; S.okNum = null; S.okReg = r; S.okErro = "";
       S._fila = await contarFila(); await sincronizar();
       const ainda = await idb.get("fila", id);
       if (ainda) S.okErro = ainda.erro || (ainda.servidor_id ? "Relato enviado; evidências ainda aguardam envio." : "");
-      else { S.okNum = S.protocolos[id]; S.okIdc = null; }
-      if (S.sessao) { S.fase = "ok"; render(); }
-    } catch (e) { btn.disabled = false; msg(esc(e.message || "Não foi possível guardar o relato no celular.")); }
+      else { S.okNum = S.protocolos[id]; if (S.okNum === "dup") S.okReg = null; S.okIdc = null; }
+      if (S.sessao) { if (S.rascunhos) delete S.rascunhos[chaveRascunho("manutencao")]; S.fase = "ok"; render(); }
+    } catch (e) { btn.disabled = false; msg("Não foi possível guardar o relato no celular. Libere espaço e tente novamente. " + esc(e.message || "")); }
   }
-  function abrirEdicao(tipo, r, edit, fotos) { limparFluxo(); S.tela = tipo; S.tipo = tipo; S.rasc = r; S.edit = edit; S.fotos = fotos || []; S.fase = "form"; render(); }
+  function abrirEdicao(tipo, r, edit, fotos) { capturarRascunho(); limparFluxo(); S.tela = tipo; S.tipo = tipo; S.rasc = r; S.edit = edit; S.fotos = fotos || []; S.fase = "form"; render(); }
 
   const acoes = {
     async entrar() {
@@ -722,14 +822,15 @@
         if (!r.ok) return msg(esc(r.msg));
         S.sessao = { token: r.token, nome: r.nome }; gravarSessao(S.sessao, $("#lg_manter").checked); S.aviso = "";
         await atualizarListas(); if (!S.sessao) return;
-        S._fila = await contarFila(); S.veiculo = ""; S.tela = "veiculos"; render(); sincronizar();
+        S._fila = await contarFila(); S.restaurandoContexto = true; await restaurarContexto(); S.restaurandoContexto = false; render(); retomarDados(); sincronizar();
       } catch (e) { msg(esc(msgErro(e))); }
     },
     async trocar() {
       if (S.sync) { alert("Aguarde o envio terminar antes de trocar de motorista."); return; }
       await contarFila();
       if (S.filaN && !confirm(`Você tem ${S.filaN} registro(s) ainda não enviados. Se trocar agora, eles ficam guardados no celular até você entrar de novo com sinal. Trocar mesmo assim?`)) return;
-      limparSessao(); S.sessao = null; S.veiculo = ""; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
+      try { await guardarContexto(true); } catch (e) { alert("Não foi possível guardar o progresso. Libere espaço e tente novamente antes de trocar."); return; }
+      limparSessao(); S.sessao = null; S.veiculo = ""; S.rascunhos = {}; S.erroContexto = ""; S.meus = null; S.manutencoes = null; S.historico = null; S.protocolos = {}; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
     async "recarregar-veiculos"() { await atualizarListas(); if (S.sessao && S.tela === "veiculos") render(); },
     "selecionar-veiculo"() {
@@ -737,9 +838,9 @@
       if (!((S.listas && S.listas.veiculos) || []).some(v => v.placa === placa)) return msg("Selecione um caminhão da lista.");
       S.veiculo = placa; S.abastVeiculo = placa; S.tela = "home"; render();
     },
-    "trocar-veiculo"() { limparFluxo(); S.veiculo = ""; S.tela = "veiculos"; render(); },
+    "trocar-veiculo"() { capturarRascunho(); limparFluxo(); S.veiculo = ""; S.tela = "veiculos"; render(); },
     async "atualizar-manutencoes"() { await carregarManutencoes(); },
-    "rm-anexo"(a) { S.anexos.splice(Number(a.dataset.i), 1); $("#ma_anexos").innerHTML = listarAnexos(); },
+    "rm-anexo"(a) { S.anexos.splice(Number(a.dataset.i), 1); $("#ma_anexos").innerHTML = listarAnexos(); guardarContexto(true); },
     "validar-manutencao"() {
       if (S.anexoCarregando) return msg("Aguarde a verificação do arquivo.");
       const odometro = parseIntBR($("#ma_odo").value), horimetro = parseNum($("#ma_hora").value);
@@ -754,7 +855,7 @@
       S.rasc = { placa: S.veiculo, odometro, horimetro, categoria, criticidade: criticidade.value, descricao }; S.fase = "confirmar"; render();
     },
     "salvar-manutencao"() { return salvarManutencao(); },
-    ir(a) { irPara(a.dataset.t); },
+    ir(a) { return irPara(a.dataset.t); },
     "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
     "abast-dias"(a) { S.abastDias = Number(a.dataset.d); render(); },
     "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },
@@ -764,7 +865,7 @@
     async "recarregar-nomes"() { await carregarNomes(); render(); },
     foto(a) { $("#" + a.dataset.alvo).click(); },
     outro(a) { /* tratado no evento change */ },
-    passo(a) { const el = $("#" + a.dataset.alvo); el.value = Math.max(0, Math.min(500, (parseInt(el.value, 10) || 0) + parseInt(a.dataset.d, 10))); },
+    passo(a) { const el = $("#" + a.dataset.alvo); el.value = Math.max(0, Math.min(500, (parseInt(el.value, 10) || 0) + parseInt(a.dataset.d, 10))); guardarContexto(true); },
     "validar-abast"() {
       const { erros, rasc } = lerAbast();
       if (erros.length) return msg(erros.join("<br>"));
@@ -776,7 +877,7 @@
       S.rasc = rasc; S.fase = "confirmar"; render();
     },
     "voltar-form"() { S.fase = "form"; render(); },
-    "rm-foto"(a) { S.fotos.splice(Number(a.dataset.i), 1); pintarFotos(a.dataset.pref); msg(""); },
+    "rm-foto"(a) { S.fotos.splice(Number(a.dataset.i), 1); pintarFotos(a.dataset.pref); msg(""); guardarContexto(true); },
     salvar() { salvar(); },
     async "corrigir-fila"(a) {
       const it = (await idb.get("fila", a.dataset.id)); if (!it) return;
@@ -811,6 +912,7 @@
     ev.preventDefault(); const f = acoes[a.dataset.act]; if (f) f(a);
   });
   document.addEventListener("input", ev => {
+    guardarContexto(true);
     if (ev.target.id === "co_cli_txt") return atualizarNav();
     if (ev.target.id !== "cl_busca") return;
     const q = semAcento(ev.target.value.trim());
@@ -818,9 +920,10 @@
   });
   document.addEventListener("change", async ev => {
     const el = ev.target;
-    if ((el.id === "ma_fotos" || el.id === "ma_video") && el.files && el.files.length) {
+    if ((el.id === "ma_cam" || el.id === "ma_fotos" || el.id === "ma_video") && el.files && el.files.length) {
       if (S.anexoCarregando) { el.value = ""; return msg("Aguarde a verificação do arquivo anterior."); }
       const video = el.id === "ma_video", arquivos = Array.from(el.files); el.disabled = true;
+      const sessao = S.sessao, placa = S.veiculo;
       S.anexoCarregando = true;
       try {
         for (const f of arquivos) {
@@ -829,12 +932,12 @@
           if (!permitidos.includes(f.type)) throw new Error("Formato de arquivo não aceito. Use JPEG, PNG, WebP, MP4, WebM ou MOV.");
           if (!f.size || f.size > (video ? 20 : 5) * 1024 * 1024) throw new Error(video ? "O vídeo deve ter até 20 MiB." : "Cada foto deve ter até 5 MiB.");
           if (video) await duracaoVideo(f);
-          if (S.tela !== "manutencao" || S.fase !== "form") throw new Error("Volte ao relato para adicionar a evidência.");
+          if (S.sessao !== sessao || S.veiculo !== placa || S.tela !== "manutencao" || S.fase !== "form") throw new Error("Volte ao relato para adicionar a evidência.");
           S.anexos.push({ id: uuid(), tipo: video ? "video" : "foto", mime: f.type, nome: f.name, blob: f, proximo: 0 });
         }
         msg("");
       } catch (e) { msg(esc(e.message)); }
-      finally { S.anexoCarregando = false; el.value = ""; el.disabled = false; const lista = $("#ma_anexos"); if (lista) lista.innerHTML = listarAnexos(); }
+      finally { S.anexoCarregando = false; el.value = ""; el.disabled = false; const lista = $("#ma_anexos"); if (lista) lista.innerHTML = listarAnexos(); guardarContexto(true); }
       return;
     }
     if (el.id === "abast_veiculo") { S.abastVeiculo = el.value; render(); }
@@ -851,10 +954,11 @@
       if (erro) msg(esc(erro)); else if (ignoradas) msg(`Limite de ${MAX_FOTOS} fotos por registro: ${ignoradas} não foram adicionadas.`, "aviso"); else msg("");
       el.value = "";
     }
+    guardarContexto(true);
   });
   window.addEventListener("online", async () => { if (S.sessao) { await atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "frota", "login", "veiculos"].includes(S.tela)) render(); });
   window.addEventListener("offline", () => { if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && S.sessao) sincronizar(); });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) guardarContexto(true); else if (S.sessao) sincronizar(); });
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
 
   // ============================ início ============================
@@ -887,7 +991,14 @@
 .abast-hist-dados b,.abast-hist-dados small{display:block}
 .abast-hist-dados b{font-size:.95rem}
 .abast-hist-dados small{color:var(--mut);font-size:.72rem}
-.tema{display:block;width:auto;min-height:2.6rem;margin:calc(env(safe-area-inset-top,0px) + 8px) auto 0}`;
+.tema{display:block;width:auto;min-height:2.6rem;margin:calc(env(safe-area-inset-top,0px) + 8px) auto 0}
+.topo-acoes{display:flex;justify-content:space-between;gap:.6rem}.topo-acoes button{width:auto;min-height:2.6rem}`;
+  async function retomarDados() {
+    const tela = S.tela;
+    if (tela === "manutencoes") await carregarManutencoes();
+    else if (tela === "meus" || tela === "dre") { await carregarMeus(); if (S.tela === tela) render(); }
+    else if (tela === "frota") { await carregarUltimosAbast(); if (S.tela === tela) render(); }
+  }
   async function iniciar() {
     document.head.appendChild(Object.assign(document.createElement("style"), { textContent: CSS_EXTRA }));
     const tema = $("#tema"), preferencia = window.matchMedia("(prefers-color-scheme: dark)");
@@ -907,7 +1018,7 @@
     const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
     const la = await idb.get("cache", "ultimos-abastecimentos"); S.ultimosAbast = la ? la.v : null;
     S.sessao = lerSessao();
-    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.veiculo = ""; S.tela = "veiculos"; render(); await atualizarListas(); if (S.sessao) { if (S.tela === "veiculos") render(); sincronizar(); } }
+    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); await atualizarListas(); if (S.sessao) { S.restaurandoContexto = true; await restaurarContexto(); S.restaurandoContexto = false; render(); retomarDados(); sincronizar(); } }
     else render();
     await carregarNomes(); if (S.tela === "login") render();
   }
