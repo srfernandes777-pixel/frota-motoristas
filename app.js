@@ -83,7 +83,9 @@
     return corpo;
   }
   const MSG = { sessao_invalida: "Sua sessão expirou. Entre de novo.", dados_invalidos: "O servidor não aceitou os dados. Confira os valores.",
-    foto_grande: "A foto é grande demais.", nao_alteravel: "Este registro já foi aprovado ou cancelado e não pode mais ser alterado." };
+    foto_grande: "A foto é grande demais.", nao_alteravel: "Este registro já foi aprovado ou cancelado e não pode mais ser alterado.",
+    veiculo_nao_cadastrado: "O veículo não está mais cadastrado. Avise o responsável para revisar o cadastro antes de reenviar.",
+    id_cliente_em_uso: "Este identificador de relato já está em uso. Avise o responsável." };
   const msgErro = e => e.rede ? "Sem sinal no momento." : (MSG[e.message] || ("Erro no servidor: " + e.message));
 
   const configPendente = () => { const u = String(CFG.SUPABASE_URL || "").trim(), k = String(CFG.SUPABASE_KEY || "").trim(); return !/^https?:\/\//i.test(u) || /x{5,}/i.test(u) || !k || /x{8,}/i.test(k); };
@@ -97,7 +99,7 @@
   }
 
   // ============================ estado ============================
-  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], anexos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, abastVeiculo: "", abastDias: 7, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {}, turnos: null, turno: null, turnoErro: "", manutencoes: null, historico: null, manutErro: "" };
+  const S = { protocolos: {}, dreDias: 30, tela: "login", sessao: null, listas: null, nomes: [], tipo: null, fase: "form", rasc: null, fotos: [], anexos: [], edit: null, filaN: 0, meus: null, meusErro: "", ultimosAbast: null, ultimosAbastErro: "", ultimosAbastCarregando: false, abastVeiculo: "", abastDias: 7, sync: false, okMsg: "", aviso: "", erroNomes: "", syncMsg: null, locais: {}, veiculo: "", listasErro: "", manutencoes: null, historico: null, manutErro: "" };
   const app = () => $("#app");
   const online = () => navigator.onLine !== false;
 
@@ -126,10 +128,12 @@
   async function atualizarListas() {
     try {
       const l = await rpc("app_listas", { p_token: token() });
-      S.listas = l; await idb.put("cache", { k: "listas", v: l });
+      if (!l || !Array.isArray(l.veiculos)) throw new Error("Resposta inválida da lista de veículos.");
+      S.listas = l; S.listasErro = ""; await idb.put("cache", { k: "listas", v: l });
     } catch (e) {
       if (!e.rede && e.message === "sessao_invalida") { sessaoExpirada(); return false; }
-      const c = await idb.get("cache", "listas"); if (c) S.listas = c.v;
+      const c = await idb.get("cache", "listas"); S.listas = c ? c.v : null;
+      S.listasErro = c ? `Não foi possível atualizar os veículos: ${msgErro(e)} Mostrando lista salva, que pode estar desatualizada.` : `Não foi possível carregar os veículos: ${msgErro(e)}`;
     }
     try {  // localizações aprovadas dos clientes (sem sinal, ou banco ainda sem a função: fica o que já está guardado)
       const lo = await rpc("app_locais", { p_token: token() });
@@ -317,20 +321,19 @@
   }
   function vHome() {
     return `${barra()}<h1>Olá, ${esc(S.sessao.nome.split(" ")[0])}! 👋</h1><p class="peq">O que você quer registrar?</p>
-      ${S.turno ? `<div class="card"><b>🚚 ${esc(S.turno.placa)}</b> · ${esc(S.turno.rota || "Sem rota")} · ${esc(S.turno.periodo)}<button data-act="trocar-turno">Trocar turno</button></div>` : ""}
+      ${S.veiculo ? `<div class="card"><b>🚚 ${esc(S.veiculo)}</b><button data-act="trocar-veiculo">Trocar caminhão</button></div>` : ""}
       <div class="grade3" style="grid-template-columns:repeat(2,1fr)"><button class="pri" data-act="ir" data-t="manutencao">🔧<br>Manutenção</button><button class="pri" data-act="ir" data-t="abast">⛽<br>Abastecimento</button><button class="pri" data-act="ir" data-t="coleta">📦<br>Coleta</button><button class="pri" data-act="ir" data-t="clientes">🧭<br>Clientes</button><button class="pri" data-act="ir" data-t="meus">📋<br>Meus registros</button><button class="pri" data-act="ir" data-t="frota">🚚<br>Registros da Frota</button><button class="pri" style="grid-column:1/-1" data-act="ir" data-t="dre">📊<br>Meu painel (gastos e rendimento)</button></div>`;
   }
-  function vTurnos() {
-    const opcoes = (S.turnos || []).map(t => `<option value="${esc(t.id)}">${esc(t.placa)} · ${esc(t.rota || "Sem rota")} · ${esc(t.periodo)}</option>`).join("");
-    return `${barra()}<h1>Escolha seu turno</h1><p class="peq">Selecione o caminhão e a rota atribuídos a você.</p>
-      <label for="turno_data">Data do turno</label><input id="turno_data" type="date" value="${esc(S.turnoData || hoje())}">
-      ${S.turnoErro ? `<div class="aviso">${esc(S.turnoErro)}</div>` : ""}
-      ${opcoes ? `<label for="turno">Turno atribuído</label><select id="turno"><option value="">— selecione —</option>${opcoes}</select><div id="msg" role="alert"></div><button class="pri" data-act="selecionar-turno">Continuar</button>` : `<div class="info">${S.turnos == null ? "Carregando turnos…" : "Nenhum turno atribuído para esta data. Avise o responsável."}</div>`}
-      <button data-act="recarregar-turnos">🔄 Atualizar turnos</button>`;
+  function vVeiculos() {
+    const veiculos = (S.listas && S.listas.veiculos) || [];
+    return `${barra()}<h1>Escolha seu caminhão</h1><p class="peq">Selecione o veículo que você está usando.</p>
+      ${S.listasErro ? `<div class="aviso">${esc(S.listasErro)}</div>` : ""}
+      ${veiculos.length ? `<label for="veiculo">Caminhão</label><select id="veiculo">${optsPlaca("")}</select><div id="msg" role="alert"></div><button class="pri" data-act="selecionar-veiculo">Continuar</button>` : '<div class="info">Nenhum veículo disponível. Atualize a lista ou avise o responsável.</div>'}
+      <button data-act="recarregar-veiculos">🔄 Atualizar veículos</button>`;
   }
   function vManutencao() {
-    const r = S.rasc || {}, t = S.turno;
-    return `${topo("🔧 Relatar manutenção")}<div class="card"><b>Caminhão:</b> ${esc(t.placa)}<br><b>Rota:</b> ${esc(t.rota || "—")}<br><b>Turno:</b> ${esc(t.periodo)} · ${esc(brData(t.data))}</div>
+    const r = S.rasc || {};
+    return `${topo("🔧 Relatar manutenção")}<div class="card"><b>Caminhão:</b> ${esc(S.veiculo)}</div>
       <label for="ma_odo">Odômetro (km)</label><input id="ma_odo" data-mask="int" value="${r.odometro != null ? fmtInt(r.odometro) : ""}">
       <label for="ma_hora">Horímetro (horas)</label><input id="ma_hora" data-mask="dec" value="${r.horimetro != null ? fmtDec(r.horimetro) : ""}">
       <label for="ma_cat">Sistema</label><select id="ma_cat"><option value="">— selecione —</option>${Object.entries(CATEGORIAS).map(([v, texto]) => `<option value="${v}" ${r.categoria === v ? "selected" : ""}>${esc(texto)}</option>`).join("")}</select>
@@ -343,7 +346,7 @@
   }
   function vConfManutencao() {
     const r = S.rasc;
-    return `${topo("Confira o relato")}<div class="card"><b>Caminhão:</b> ${esc(S.turno.placa)}<br><b>Rota:</b> ${esc(S.turno.rota || "—")}<br><b>Turno:</b> ${esc(S.turno.periodo)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km<br><b>Horímetro:</b> ${fmtDec(r.horimetro)} h<br><b>Sistema:</b> ${esc(CATEGORIAS[r.categoria])}<br><b>Criticidade:</b> ${esc(CRITICIDADES[r.criticidade])}<br><b>Problema:</b> ${esc(r.descricao)}</div>
+    return `${topo("Confira o relato")}<div class="card"><b>Caminhão:</b> ${esc(r.placa)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km<br><b>Horímetro:</b> ${fmtDec(r.horimetro)} h<br><b>Sistema:</b> ${esc(CATEGORIAS[r.categoria])}<br><b>Criticidade:</b> ${esc(CRITICIDADES[r.criticidade])}<br><b>Problema:</b> ${esc(r.descricao)}</div>
       <p>${S.anexos.length} evidência(s) selecionada(s)</p>
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo os dados do relato</label><div id="msg"></div><div class="linha"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar-manutencao" disabled>✅ Salvar relato</button></div>`;
   }
@@ -353,7 +356,7 @@
     const estados = { recebido: "Recebido", visualizado: "Visualizado", agendado: "Agendado", em_andamento: "Em andamento", concluido: "Concluído", cancelado: "Cancelado" };
     const relatos = S.manutencoes == null ? `<div class="info">${esc(S.manutErro || "Carregando relatos…")}</div>` : S.manutencoes.length ? S.manutencoes.map(r => `<div class="card"><b>${esc(CATEGORIAS[r.categoria] || r.categoria)}</b> · ${esc(r.placa)}<br>${esc(CRITICIDADES[r.criticidade] || r.criticidade)}<br>${esc(r.descricao)}<div class="st">${r.visualizado_em ? "✅ Visto pelo responsável" : "⏳ Ainda não visualizado"}</div><div>Estado: ${esc(estados[r.status] || r.status || "registrado")}</div></div>`).join("") : '<p class="peq">Nenhum relato enviado.</p>';
     const hist = S.historico == null ? `<div class="info">${esc(S.manutErro || "Carregando histórico…")}</div>` : S.historico.length ? S.historico.map(r => `<div class="card"><b>${esc(CATEGORIAS[r.categoria] || r.categoria || "Manutenção")}</b>${r.concluido_em ? ` · ${esc(brData(String(r.concluido_em).slice(0, 10)))}` : ""}<br>${esc(r.descricao || "")}</div>`).join("") : '<p class="peq">Nenhuma manutenção concluída encontrada.</p>';
-    return `${topo("📋 Manutenção")}<div id="msg"></div>${locais ? `<h2>No celular</h2>${locais}` : ""}<h2>Meus relatos</h2>${relatos}<h2>Últimas 5 manutenções concluídas · ${esc(S.turno.placa)}</h2>${hist}<button data-act="atualizar-manutencoes">🔄 Atualizar</button>`;
+    return `${topo("📋 Manutenção")}<div id="msg"></div>${locais ? `<h2>No celular</h2>${locais}` : ""}<h2>Meus relatos</h2>${relatos}<h2>Últimas 5 manutenções concluídas · ${esc(S.veiculo)}</h2>${hist}<button data-act="atualizar-manutencoes">🔄 Atualizar</button>`;
   }
   const fotosExistentes = () => (S.edit && S.edit.fotosExistentes) || 0;
   const miniaturas = fotos => fotos.length ? `<div class="miniaturas">${fotos.map(f => `<div class="mini"><img src="data:image/jpeg;base64,${f}"></div>`).join("")}</div>` : "";
@@ -546,7 +549,7 @@
   }
 
   function render() {
-    const v = { login: vLogin, turnos: vTurnos, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes, manutencoes: vManutencoes }[S.tela]
+    const v = { login: vLogin, veiculos: vVeiculos, home: vHome, meus: vMeus, frota: vFrota, dre: vDre, clientes: vClientes, manutencoes: vManutencoes }[S.tela]
       || (S.tela === "abast" ? (S.fase === "form" ? vAbast : S.fase === "confirmar" ? vConfAbast : vOk)
         : S.tela === "coleta" ? (S.fase === "form" ? vColeta : S.fase === "confirmar" ? vConfColeta : vOk)
         : S.tela === "manutencao" ? (S.fase === "form" ? vManutencao : S.fase === "confirmar" ? vConfManutencao : vOk) : vHome);
@@ -556,35 +559,20 @@
 
   // ============================ ações ============================
   function limparFluxo() { S.rasc = null; S.fotos = []; S.anexos = []; S.edit = null; S.fase = "form"; S.okMsg = ""; }
-  async function carregarTurnos() {
-    S.turnos = null; S.turnoErro = ""; render();
-    const data = S.turnoData || hoje(), chave = `turnos:${S.sessao.nome}:${data}`;
-    const sessao = S.sessao;
-    try {
-      const turnos = await rpc("app_turnos", { p_token: token(), p_data: data });
-      if (!Array.isArray(turnos)) throw new Error("Resposta inválida dos turnos.");
-      await idb.put("cache", { k: chave, v: turnos });
-      if (S.sessao !== sessao || S.turnoData !== data) return;
-      S.turnos = turnos;
-    } catch (e) {
-      if (S.sessao !== sessao || S.turnoData !== data) return;
-      if (e.message === "sessao_invalida") return sessaoExpirada();
-      const cache = e.rede ? await idb.get("cache", chave) : null;
-      S.turnos = cache ? cache.v : [];
-      S.turnoErro = cache ? "Sem sinal: mostrando turnos salvos anteriormente, sujeitos a alteração." : msgErro(e);
-    }
-    if (S.tela === "turnos") render();
-  }
   async function carregarManutencoes() {
+    const placa = S.veiculo, sessao = S.sessao;
+    const requisicao = S.manutRequisicao = (S.manutRequisicao || 0) + 1;
     S.manutencoes = null; S.historico = null; S.manutErro = ""; render();
     try {
       const [relatos, historico] = await Promise.all([
         rpc("app_manutencoes", { p_token: token() }),
-        rpc("app_historico_manutencao", { p_token: token(), p_placa: S.turno.placa })
+        rpc("app_historico_manutencao", { p_token: token(), p_placa: placa })
       ]);
       if (!Array.isArray(relatos) || !Array.isArray(historico)) throw new Error("Resposta inválida do histórico.");
+      if (S.sessao !== sessao || S.veiculo !== placa || S.manutRequisicao !== requisicao) return;
       S.manutencoes = relatos; S.historico = historico.slice(0, 5);
     } catch (e) {
+      if (S.sessao !== sessao || S.veiculo !== placa || S.manutRequisicao !== requisicao) return;
       if (e.message === "sessao_invalida") return sessaoExpirada();
       S.manutErro = e.rede ? "Sem sinal: conecte-se para consultar relatos e histórico." : msgErro(e);
     }
@@ -711,10 +699,10 @@
   async function salvarManutencao() {
     if (!$("#cf_ok").checked) return msg("Marque a confirmação para continuar.");
     const btn = $("#btn_salvar"); btn.disabled = true;
-    const id = uuid(), r = S.rasc;
+    const id = uuid(), r = Object.assign({}, S.rasc, { data: hoje() });
     try {
-      await idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: S.sessao.nome, registrado_em: new Date().toISOString(), placa: S.turno.placa, reg: r, anexos: S.anexos.slice(), erro: null });
-      S.okIdc = id; S.okNum = null; S.okReg = Object.assign({ placa: S.turno.placa }, r); S.okErro = "";
+      await idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: S.sessao.nome, registrado_em: new Date().toISOString(), placa: r.placa, reg: r, anexos: S.anexos.slice(), erro: null });
+      S.okIdc = id; S.okNum = null; S.okReg = r; S.okErro = "";
       S._fila = await contarFila(); await sincronizar();
       const ainda = await idb.get("fila", id);
       if (ainda) S.okErro = ainda.erro || (ainda.servidor_id ? "Relato enviado; evidências ainda aguardam envio." : "");
@@ -734,22 +722,22 @@
         if (!r.ok) return msg(esc(r.msg));
         S.sessao = { token: r.token, nome: r.nome }; gravarSessao(S.sessao, $("#lg_manter").checked); S.aviso = "";
         await atualizarListas(); if (!S.sessao) return;
-        S._fila = await contarFila(); S.turno = null; S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); sincronizar();
+        S._fila = await contarFila(); S.veiculo = ""; S.tela = "veiculos"; render(); sincronizar();
       } catch (e) { msg(esc(msgErro(e))); }
     },
     async trocar() {
       if (S.sync) { alert("Aguarde o envio terminar antes de trocar de motorista."); return; }
       await contarFila();
       if (S.filaN && !confirm(`Você tem ${S.filaN} registro(s) ainda não enviados. Se trocar agora, eles ficam guardados no celular até você entrar de novo com sinal. Trocar mesmo assim?`)) return;
-      limparSessao(); S.sessao = null; S.turno = null; S.turnos = null; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
+      limparSessao(); S.sessao = null; S.veiculo = ""; S.tela = "login"; limparFluxo(); S.aviso = ""; render();
     },
-    async "recarregar-turnos"() { await carregarTurnos(); },
-    "selecionar-turno"() {
-      const turno = (S.turnos || []).find(t => String(t.id) === $("#turno").value);
-      if (!turno) return msg("Selecione seu turno.");
-      S.turno = turno; S.abastVeiculo = turno.placa; S.tela = "home"; render();
+    async "recarregar-veiculos"() { await atualizarListas(); if (S.sessao && S.tela === "veiculos") render(); },
+    "selecionar-veiculo"() {
+      const placa = $("#veiculo").value;
+      if (!((S.listas && S.listas.veiculos) || []).some(v => v.placa === placa)) return msg("Selecione um caminhão da lista.");
+      S.veiculo = placa; S.abastVeiculo = placa; S.tela = "home"; render();
     },
-    async "trocar-turno"() { limparFluxo(); S.turno = null; S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); },
+    "trocar-veiculo"() { limparFluxo(); S.veiculo = ""; S.tela = "veiculos"; render(); },
     async "atualizar-manutencoes"() { await carregarManutencoes(); },
     "rm-anexo"(a) { S.anexos.splice(Number(a.dataset.i), 1); $("#ma_anexos").innerHTML = listarAnexos(); },
     "validar-manutencao"() {
@@ -763,7 +751,7 @@
       if (!criticidade || !CRITICIDADES[criticidade.value]) erros.push("Selecione a criticidade.");
       if (!descricao) erros.push("Descreva o problema.");
       if (erros.length) return msg(erros.join("<br>"));
-      S.rasc = { turno_id: S.turno.id, odometro, horimetro, categoria, criticidade: criticidade.value, descricao }; S.fase = "confirmar"; render();
+      S.rasc = { placa: S.veiculo, odometro, horimetro, categoria, criticidade: criticidade.value, descricao }; S.fase = "confirmar"; render();
     },
     "salvar-manutencao"() { return salvarManutencao(); },
     ir(a) { irPara(a.dataset.t); },
@@ -830,7 +818,6 @@
   });
   document.addEventListener("change", async ev => {
     const el = ev.target;
-    if (el.id === "turno_data") { if (el.value) { S.turnoData = el.value; await carregarTurnos(); } return; }
     if ((el.id === "ma_fotos" || el.id === "ma_video") && el.files && el.files.length) {
       if (S.anexoCarregando) { el.value = ""; return msg("Aguarde a verificação do arquivo anterior."); }
       const video = el.id === "ma_video", arquivos = Array.from(el.files); el.disabled = true;
@@ -865,7 +852,7 @@
       el.value = "";
     }
   });
-  window.addEventListener("online", async () => { if (S.sessao) { atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
+  window.addEventListener("online", async () => { if (S.sessao) { await atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "frota", "login", "veiculos"].includes(S.tela)) render(); });
   window.addEventListener("offline", () => { if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
   document.addEventListener("visibilitychange", () => { if (!document.hidden && S.sessao) sincronizar(); });
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
@@ -920,7 +907,7 @@
     const lc = await idb.get("cache", "locais"); S.locais = lc ? lc.v : {};
     const la = await idb.get("cache", "ultimos-abastecimentos"); S.ultimosAbast = la ? la.v : null;
     S.sessao = lerSessao();
-    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.turnoData = hoje(); S.tela = "turnos"; await carregarTurnos(); if (S.sessao) { atualizarListas().then(() => { if (S.tela === "home") render(); }); sincronizar(); } }
+    if (S.sessao) { const l = await idb.get("cache", "listas"); if (l) S.listas = l.v; S._fila = await contarFila(); S.veiculo = ""; S.tela = "veiculos"; render(); await atualizarListas(); if (S.sessao) { if (S.tela === "veiculos") render(); sincronizar(); } }
     else render();
     await carregarNomes(); if (S.tela === "login") render();
   }
