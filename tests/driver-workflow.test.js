@@ -23,7 +23,7 @@ function app() {
   };
   context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {} };
   let source = fs.readFileSync("app.js", "utf8");
-  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, carregarTurnos, carregarManutencoes };");
+  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes };");
   source = source.replace("  iniciar();", "");
   vm.runInNewContext(source, context);
   const api = context.window.__frota, stores = { fila: new Map(), cache: new Map() };
@@ -35,16 +35,44 @@ function app() {
   return { api, context, element, stores, listeners };
 }
 
-test("turnos são escolhidos explicitamente e erros não viram lista bem-sucedida", async () => {
-  const { api, context, element } = app();
-  const turno = { id: 12, data: "2026-11-13", placa: "ABC1234", rota: "Centro", periodo: "Noite" };
-  context.fetch = async (url, opts) => ({ ok: true, json: async () => { assert.equal(JSON.parse(opts.body).p_data, "2026-11-13"); return [turno]; } });
-  api.S.tela = "turnos"; api.S.turnoData = "2026-11-13";
-  await api.carregarTurnos();
-  assert.equal(api.S.turno, null);
-  element("#turno").value = "12"; api.acoes["selecionar-turno"]();
-  assert.equal(api.S.turno.placa, "ABC1234");
+test("caminhão é escolhido explicitamente entre os veículos cadastrados", () => {
+  const { api, element } = app();
+  api.S.tela = "veiculos"; api.S.listas = { veiculos: [{ placa: "ABC1234", tipo: "Caminhão" }] };
+  api.render();
+  assert.match(element("#app").innerHTML, /Escolha seu caminhão/);
+  element("#veiculo").value = "INVÁLIDA"; api.acoes["selecionar-veiculo"]();
+  assert.equal(api.S.tela, "veiculos");
+  element("#veiculo").value = "ABC1234"; api.acoes["selecionar-veiculo"]();
+  assert.equal(api.S.veiculo, "ABC1234");
   assert.equal(api.S.tela, "home");
+  api.acoes["trocar-veiculo"]();
+  assert.equal(api.S.veiculo, "");
+  assert.equal(api.S.tela, "veiculos");
+});
+
+test("login consulta veículos, não turnos, e exige escolha manual", async () => {
+  const { api, context, element } = app(), chamadas = [];
+  context.fetch = async url => {
+    const nome = url.split("/").pop(); chamadas.push(nome);
+    const respostas = { app_login: { ok: true, token: "token", nome: "Ana" }, app_listas: { veiculos: [{ placa: "ABC", tipo: "Caminhão" }] }, app_locais: [] };
+    return { ok: true, json: async () => respostas[nome] };
+  };
+  api.S.sessao = null; api.S.tela = "login";
+  element("#lg_nome").value = "Ana"; element("#lg_pin").value = "1234";
+  await api.acoes.entrar();
+  assert.equal(api.S.tela, "veiculos"); assert.equal(api.S.veiculo, "");
+  assert.deepEqual(chamadas, ["app_login", "app_listas", "app_locais"]);
+});
+
+test("lista offline usa cache com aviso e preserva seleção manual", async () => {
+  const { api, context, element } = app();
+  await api.idb.put("cache", { k: "listas", v: { veiculos: [{ placa: "ABC" }] } });
+  context.fetch = async () => { throw new Error("offline"); };
+  api.S.tela = "veiculos";
+  await api.atualizarListas(); api.render();
+  assert.match(element("#app").innerHTML, /lista salva, que pode estar desatualizada/);
+  element("#veiculo").value = "ABC"; api.acoes["selecionar-veiculo"]();
+  assert.equal(api.S.veiculo, "ABC");
 });
 
 test("fallback mostra apenas o último abastecimento do veículo fora do período", () => {
@@ -111,9 +139,36 @@ test("envio retoma evidência em blocos sem reenviar relato nem descartar fila",
   assert.equal(partes[0].args.p_total, 2);
 });
 
+test("fila antiga com turno e relato novo por placa são enviados sem alteração", async () => {
+  const { api, context } = app(), enviados = [];
+  context.fetch = async (url, opts) => {
+    assert.equal(url.split("/").pop(), "app_enviar_manutencao");
+    enviados.push(JSON.parse(opts.body).p_reg);
+    return { ok: true, json: async () => ({ ok: true, id: enviados.length }) };
+  };
+  for (const [id, reg] of [["antigo", { turno_id: 12, descricao: "antigo" }], ["novo", { placa: "ABC", data: "2026-11-13", descricao: "novo" }]]) {
+    await api.idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: "Ana", registrado_em: id === "antigo" ? "2026-11-12" : "2026-11-13", reg, anexos: [] });
+  }
+  await api.sincronizar();
+  assert.equal(enviados[0].turno_id, 12); assert.equal(enviados[0].placa, undefined);
+  assert.equal(enviados[1].placa, "ABC"); assert.equal(enviados[1].turno_id, undefined);
+  assert.equal(enviados[1].data, "2026-11-13");
+  assert.equal((await api.idb.all("fila")).length, 0);
+});
+
+test("placa removida é sinalizada e relato permanece na fila", async () => {
+  const { api, context } = app();
+  context.fetch = async () => ({ ok: false, json: async () => ({ message: "veiculo_nao_cadastrado" }) });
+  await api.idb.put("fila", { id_cliente: "novo", tipo: "manutencao", motorista: "Ana", registrado_em: "2026-11-13", reg: { placa: "ABC" }, anexos: [] });
+  await api.sincronizar();
+  const item = await api.idb.get("fila", "novo");
+  assert.match(item.erro, /veículo não está mais cadastrado/);
+  assert.equal(item.reg.placa, "ABC");
+});
+
 test("relatos mostram visualização e histórico limitado ao caminhão selecionado", async () => {
   const { api, context, element } = app();
-  api.S.turno = { placa: "ABC" }; api.S.tela = "manutencoes";
+  api.S.veiculo = "ABC"; api.S.tela = "manutencoes";
   context.fetch = async (url, opts) => {
     const nome = url.split("/").pop(), args = JSON.parse(opts.body);
     if (nome === "app_historico_manutencao") {
@@ -132,7 +187,7 @@ test("relatos mostram visualização e histórico limitado ao caminhão selecion
 test("relato offline mantém dados e evidências na fila", async () => {
   const { api, context, element, stores } = app();
   context.navigator.onLine = false;
-  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.turno = { id: 12, placa: "ABC", rota: "Centro", periodo: "Noite", data: "2026-11-13" };
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC";
   element("#ma_odo").value = "120.300"; element("#ma_hora").value = "42,5";
   element("#ma_cat").value = "freios_suspensao"; element('input[name="criticidade"]:checked').value = "critico";
   element("#ma_desc").value = "Freio com defeito";
@@ -142,7 +197,8 @@ test("relato offline mantém dados e evidências na fila", async () => {
   element("#cf_ok").checked = true;
   await api.acoes["salvar-manutencao"]();
   const item = Array.from(stores.fila.values())[0];
-  assert.equal(item.reg.turno_id, 12); assert.equal(item.reg.odometro, 120300);
+  assert.equal(item.reg.placa, "ABC"); assert.equal(item.reg.turno_id, undefined);
+  assert.match(item.reg.data, /^\d{4}-\d{2}-\d{2}$/); assert.equal(item.reg.odometro, 120300);
   assert.equal(item.reg.horimetro, 42.5); assert.equal(item.reg.criticidade, "critico");
   assert.equal(item.anexos[0].blob.size, 6);
   assert.match(element("#app").innerHTML, /AINDA NÃO ENVIADO/);
