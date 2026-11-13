@@ -445,7 +445,7 @@
     const avisoAbast = S.ultimosAbastErro ? `<div class="aviso">${esc(S.ultimosAbastErro)}</div>` : "";
     const veiculos = ((S.listas && S.listas.veiculos) || []).slice().sort((a, b) => a.placa.localeCompare(b.placa, "pt-BR"));
     const opcoesAbast = veiculos.length
-      ? `<div class="abast-veiculos">${veiculos.map(v => `<button data-act="abast-veiculo" data-placa="${esc(v.placa)}" class="${S.abastVeiculo === v.placa ? "on" : ""}">🚚 ${esc(v.placa)}</button>`).join("")}</div>`
+      ? `<div class="abast-veiculos">${veiculos.map(v => `<button data-act="abast-veiculo" data-placa="${esc(v.placa)}" class="${S.abastVeiculo === v.placa ? "on" : ""}">🚚 ${v.tipo ? `${esc(v.tipo)} · ` : ""}${esc(v.placa)}</button>`).join("")}</div>`
       : '<p class="peq">Não há veículos cadastrados para selecionar.</p>';
     let abast;
     if (S.ultimosAbast == null) abast = `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`;
@@ -461,8 +461,11 @@
             <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
           </div>`).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
     }
+    const selecionado = veiculos.find(v => v.placa === S.abastVeiculo);
+    const nomeSelecionado = selecionado ? `${selecionado.tipo ? esc(selecionado.tipo) + " · " : ""}${esc(selecionado.placa)}` : "";
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>🚚 Registros da Frota</h2>
-      <p class="peq">Consulte os abastecimentos feitos por qualquer motorista. Escolha um veículo e o período.</p>${opcoesAbast}${abast}`;
+      <p class="peq">Consulte os abastecimentos feitos por qualquer motorista. Escolha um veículo e o período.</p>${opcoesAbast}
+      ${nomeSelecionado ? `<h3>${nomeSelecionado}</h3>` : ""}${abast}`;
   }
 
   function render() {
