@@ -61,6 +61,33 @@ test("fallback mostra apenas o último abastecimento do veículo fora do períod
   assert.doesNotMatch(element("#app").innerHTML, /Outro/);
 });
 
+test("períodos de 7 e 30 dias preservam resultados e identificam corretamente o fallback", () => {
+  const { api, element } = app();
+  const data = dias => {
+    const d = new Date(); d.setDate(d.getDate() - dias);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const registro = (dias, motorista, criado) => ({ placa: "ABC", data_abast: data(dias), criado_em: criado, motorista, combustivel: "Diesel", litros: 30, odometro: 5, valor_total: 100 });
+  api.S.tela = "frota"; api.S.abastVeiculo = "ABC"; api.S.abastDias = 7;
+  api.S.listas = { veiculos: [{ placa: "ABC" }] };
+  api.S.ultimosAbast = [registro(20, "Anterior", "2020-01-01T10:00:00"), registro(20, "Mais recente", "2020-01-01T12:00:00")];
+  api.render();
+  assert.match(element("#app").innerHTML, /fora do período selecionado/);
+  assert.match(element("#app").innerHTML, /Mais recente/);
+  assert.doesNotMatch(element("#app").innerHTML, /Anterior/);
+  api.S.abastDias = 30; api.render();
+  assert.doesNotMatch(element("#app").innerHTML, /fora do período selecionado/);
+  assert.match(element("#app").innerHTML, /Mais recente/);
+  assert.match(element("#app").innerHTML, /Anterior/);
+  api.S.ultimosAbast = [registro(31, "Antigo", "2020-01-01T12:00:00")];
+  api.render();
+  assert.match(element("#app").innerHTML, /fora do período selecionado/);
+  assert.match(element("#app").innerHTML, /Antigo/);
+  api.S.ultimosAbast = []; api.render();
+  assert.match(element("#app").innerHTML, /Nenhum abastecimento nos últimos 30 dias/);
+  assert.doesNotMatch(element("#app").innerHTML, /fora do período selecionado/);
+});
+
 test("envio retoma evidência em blocos sem reenviar relato nem descartar fila", async () => {
   const { api, context, stores } = app(), chamadas = [];
   let falhar = true;
