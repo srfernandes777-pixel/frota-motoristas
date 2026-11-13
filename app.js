@@ -445,7 +445,7 @@
     const avisoAbast = S.ultimosAbastErro ? `<div class="aviso">${esc(S.ultimosAbastErro)}</div>` : "";
     const veiculos = ((S.listas && S.listas.veiculos) || []).slice().sort((a, b) => a.placa.localeCompare(b.placa, "pt-BR"));
     const opcoesAbast = veiculos.length
-      ? `<div class="abast-veiculos">${veiculos.map(v => `<button data-act="abast-veiculo" data-placa="${esc(v.placa)}" class="${S.abastVeiculo === v.placa ? "on" : ""}">🚚 ${v.tipo ? `${esc(v.tipo)} · ` : ""}${esc(v.placa)}</button>`).join("")}</div>`
+      ? `<label for="abast_veiculo">Caminhão</label><select id="abast_veiculo"><option value="">— escolha um caminhão —</option>${veiculos.map(v => `<option value="${esc(v.placa)}" ${S.abastVeiculo === v.placa ? "selected" : ""}>${esc(v.tipo ? `${v.tipo} · ` : "")}${esc(v.placa)}</option>`).join("")}</select>`
       : '<p class="peq">Não há veículos cadastrados para selecionar.</p>';
     let abast;
     if (S.ultimosAbast == null) abast = `<div class="info">${esc(S.ultimosAbastErro || (S.ultimosAbastCarregando ? "Carregando histórico…" : "Histórico indisponível."))}</div>`;
@@ -461,11 +461,9 @@
             <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
           </div>`).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
     }
-    const selecionado = veiculos.find(v => v.placa === S.abastVeiculo);
-    const nomeSelecionado = selecionado ? `${selecionado.tipo ? esc(selecionado.tipo) + " · " : ""}${esc(selecionado.placa)}` : "";
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>🚚 Registros da Frota</h2>
       <p class="peq">Consulte os abastecimentos feitos por qualquer motorista. Escolha um veículo e o período.</p>${opcoesAbast}
-      ${nomeSelecionado ? `<h3>${nomeSelecionado}</h3>` : ""}${abast}`;
+      ${abast}`;
   }
 
   function render() {
@@ -616,7 +614,6 @@
     },
     ir(a) { irPara(a.dataset.t); },
     "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
-    "abast-veiculo"(a) { S.abastVeiculo = a.dataset.placa; render(); },
     "abast-dias"(a) { S.abastDias = Number(a.dataset.d); render(); },
     "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },
     "marcar-novo"(a) { return acaoMarcar($("#cl_novo").value, a, $("#cl_novo_msg")); },
@@ -678,6 +675,7 @@
   });
   document.addEventListener("change", async ev => {
     const el = ev.target;
+    if (el.id === "abast_veiculo") { S.abastVeiculo = el.value; render(); }
     if (el.tagName === "SELECT" && el.dataset.act === "outro") { const t = $("#" + el.dataset.alvo); if (t) { t.style.display = el.value === OUTRO ? "" : "none"; if (el.value === OUTRO) t.focus(); } }
     if (el.id === "co_cli") atualizarNav();
     if (el.id === "cf_ok") { const b = $("#btn_salvar"); if (b) b.disabled = !el.checked; }
@@ -717,9 +715,6 @@
 .dre-tab{width:100%;border-collapse:collapse;font-size:.88rem}.dre-tab td,.dre-tab th{padding:.35rem .3rem;border-bottom:1px solid #e3e7e5;text-align:right}
 .dre-tab th:first-child,.dre-tab td:first-child{text-align:left}
 .abast-historico{display:grid;gap:.2rem}
-.abast-veiculos{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0}
-.abast-veiculos button{width:auto;min-height:2.7rem}
-.abast-veiculos button.on{background:#1f7a4d!important;color:#fff!important;border-color:#1f7a4d!important}
 .abast-periodo{margin:.5rem 0}
 .abast-hist-card{line-height:1.45}
 .abast-hist-top{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
