@@ -4,35 +4,39 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
-function app() {
+function app(shared) {
+  shared = shared || {};
   const elements = new Map();
+  const controls = [];
   function element(selector) {
-    if (!elements.has(selector)) elements.set(selector, { innerHTML: "", value: "", checked: false, dataset: {}, querySelectorAll: () => [], setAttribute() {}, addEventListener() {} });
+    if (!elements.has(selector)) elements.set(selector, { innerHTML: "", value: "", checked: false, dataset: {}, querySelectorAll: query => selector === "#app" && query === "input,select,textarea" ? controls : [], setAttribute() {}, addEventListener() {}, click() { this.clicked = true; } });
     return elements.get(selector);
   }
   const listeners = {};
-  const storage = () => ({ getItem: () => null, setItem() {}, removeItem() {} });
+  const storage = map => ({ getItem: k => map.get(k) || null, setItem: (k, v) => map.set(k, String(v)), removeItem: k => map.delete(k) });
+  shared.local = shared.local || new Map(); shared.session = shared.session || new Map();
+  shared.stores = shared.stores || { fila: new Map(), cache: new Map() };
   const context = {
     console, Blob, Uint8Array, Date, Math, JSON, Number, String, Object, Array, Promise, Error, AbortController,
-    setTimeout, clearTimeout, setInterval() {}, localStorage: storage(), sessionStorage: storage(),
+    setTimeout, clearTimeout, setInterval() {}, localStorage: storage(shared.local), sessionStorage: storage(shared.session),
     navigator: { onLine: true }, location: { protocol: "file:" },
     document: { querySelector: element, querySelectorAll: () => [], addEventListener: (name, fn) => { listeners[name] = fn; }, documentElement: { dataset: {} }, head: { appendChild() {} }, createElement: () => ({}) },
     crypto: { randomUUID: () => "00000000-0000-4000-8000-000000000001" },
     FileReader: class { readAsDataURL(blob) { blob.arrayBuffer().then(b => { this.result = "data:application/octet-stream;base64," + Buffer.from(b).toString("base64"); this.onload(); }); } },
     fetch: async () => { throw new Error("offline"); }
   };
-  context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {} };
+  context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) };
   let source = fs.readFileSync("app.js", "utf8");
-  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes };");
+  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes, guardarContexto };");
   source = source.replace("  iniciar();", "");
   vm.runInNewContext(source, context);
-  const api = context.window.__frota, stores = { fila: new Map(), cache: new Map() };
+  const api = context.window.__frota, stores = shared.stores;
   api.idb.put = async (s, v) => { stores[s].set(v.id_cliente || v.k, structuredClone(v)); };
   api.idb.get = async (s, k) => structuredClone(stores[s].get(k));
   api.idb.all = async s => Array.from(stores[s].values(), v => structuredClone(v));
   api.idb.del = async (s, k) => stores[s].delete(k);
   api.S.sessao = { nome: "Ana", token: "token" };
-  return { api, context, element, stores, listeners };
+  return { api, context, element, stores, listeners, controls, shared };
 }
 
 test("caminhão é escolhido explicitamente entre os veículos cadastrados", () => {
@@ -239,4 +243,124 @@ test("vídeo respeita duração, tamanho e tipo antes de entrar na fila", async 
   assert.equal(api.S.anexos.length, 0);
   await selecionar(arquivo(100, "video/avi"));
   assert.equal(api.S.anexos.length, 0);
+});
+
+test("Relatos fica ao lado de Início e câmera e galeria aceitam fotos com os mesmos limites", async () => {
+  const { api, context, element, listeners } = app();
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC";
+  api.render();
+  const html = element("#app").innerHTML;
+  assert.match(html, /data-t="home">← Início<\/button><button data-act="ir" data-t="manutencoes">📋 Relatos/);
+  assert.match(html, /id="ma_cam"[^>]*capture="environment"/);
+  assert.match(html, /id="ma_fotos"[^>]*multiple/);
+  api.acoes.foto({ dataset: { alvo: "ma_cam" } }); assert.equal(element("#ma_cam").clicked, true);
+  const foto = new Blob(["imagem"], { type: "image/jpeg" }); foto.name = "foto.jpg";
+  for (let i = 0; i < 5; i++) await listeners.change({ target: { id: i % 2 ? "ma_fotos" : "ma_cam", type: "file", files: [foto], value: "x" } });
+  assert.equal(api.S.anexos.length, 5);
+  await listeners.change({ target: { id: "ma_cam", type: "file", files: [foto], value: "x" } });
+  assert.equal(api.S.anexos.length, 5); assert.match(element("#msg").innerHTML, /Limite de 5 fotos/);
+  await api.guardarContexto(true);
+  assert.equal(context.navigator.onLine, true);
+});
+
+test("navegação para Relatos preserva formulário e evidência ao voltar e após reinício", async () => {
+  const shared = {}, a = app(shared);
+  shared.local.set("frota_sessao", JSON.stringify({ nome: "Ana", token: "token" }));
+  await a.api.idb.put("cache", { k: "listas", v: { veiculos: [{ placa: "ABC" }], combustiveis: ["Diesel"] } });
+  a.context.navigator.onLine = false;
+  a.api.S.tela = "manutencao"; a.api.S.tipo = "manutencao"; a.api.S.veiculo = "ABC";
+  const desc = { id: "ma_desc", type: "textarea", value: "Vazamento", dataset: {}, tagName: "TEXTAREA" };
+  a.controls.push(desc);
+  a.api.S.anexos = [{ id: "foto", tipo: "foto", mime: "image/jpeg", nome: "foto.jpg", blob: new Blob(["foto"]), proximo: 0 }];
+  a.api.render(); await a.api.guardarContexto(true);
+  await a.api.acoes.ir({ dataset: { t: "manutencoes" } });
+  desc.value = "";
+  await a.api.acoes.ir({ dataset: { t: "manutencao" } });
+  assert.equal(desc.value, "Vazamento"); assert.equal(a.api.S.anexos[0].blob.size, 4);
+  await a.api.guardarContexto(true);
+  const b = app(shared), restored = { id: "ma_desc", type: "textarea", value: "", dataset: {}, tagName: "TEXTAREA" };
+  b.controls.push(restored); b.context.navigator.onLine = false;
+  await b.api.iniciar();
+  assert.equal(b.api.S.tela, "manutencao"); assert.equal(b.api.S.veiculo, "ABC");
+  assert.equal(restored.value, "Vazamento"); assert.equal(b.api.S.anexos[0].blob.size, 4);
+  await b.api.guardarContexto(true);
+});
+
+test("logout não restaura sessão e outro motorista não recebe contexto ou rascunho", async () => {
+  const shared = {}, a = app(shared);
+  shared.local.set("frota_sessao", JSON.stringify({ nome: "Ana", token: "token" }));
+  a.context.navigator.onLine = false; a.api.S.tela = "manutencao"; a.api.S.tipo = "manutencao"; a.api.S.veiculo = "ABC";
+  a.controls.push({ id: "ma_desc", type: "textarea", value: "Privado", dataset: {}, tagName: "TEXTAREA" });
+  a.api.render(); await a.api.guardarContexto(true); await a.api.acoes.trocar();
+  assert.equal(shared.local.has("frota_sessao"), false);
+  const b = app(shared); b.context.navigator.onLine = false; await b.api.iniciar();
+  assert.equal(b.api.S.tela, "login"); assert.equal(b.api.S.sessao, null);
+  b.context.navigator.onLine = true;
+  b.context.fetch = async url => ({ ok: true, json: async () => ({ app_login: { ok: true, token: "outro", nome: "Bia" }, app_listas: { veiculos: [{ placa: "XYZ" }] }, app_locais: [] })[url.split("/").pop()] });
+  b.element("#lg_nome").value = "Bia"; b.element("#lg_pin").value = "1234";
+  await b.api.acoes.entrar();
+  assert.equal(b.api.S.tela, "veiculos"); assert.equal(b.api.S.veiculo, "");
+  assert.equal(Object.keys(b.api.S.rascunhos).length, 0);
+  await b.api.guardarContexto(true);
+});
+
+test("falha ao persistir rascunho é explícita e impede registrar como salvo", async () => {
+  const { api, element } = app();
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC";
+  api.S.fase = "confirmar"; api.S.rasc = { placa: "ABC", categoria: "pneus_rodas", criticidade: "leve", odometro: 1, horimetro: 1, descricao: "pneu" };
+  const put = api.idb.put;
+  api.idb.put = async (s, v) => { if (s === "cache" && v.k.startsWith("contexto:")) throw new Error("quota"); return put(s, v); };
+  element("#cf_ok").checked = true;
+  await api.acoes["salvar-manutencao"]();
+  assert.equal((await api.idb.all("fila")).length, 0);
+  assert.notEqual(api.S.fase, "ok");
+  assert.match(element("#msg").innerHTML, /quota/);
+  assert.match(api.S.erroContexto, /Não foi possível salvar/);
+});
+
+test("confirmação não sobrescreve fila anterior do mesmo rascunho", async () => {
+  const { api, context, element } = app();
+  context.navigator.onLine = false;
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC"; api.S.fase = "confirmar";
+  api.S.rasc = { placa: "ABC", categoria: "pneus_rodas", criticidade: "leve", odometro: 1, horimetro: 1, descricao: "pneu" };
+  await api.guardarContexto(true);
+  const id = api.S.rascunhoId;
+  await api.idb.put("fila", { id_cliente: id, tipo: "manutencao", motorista: "Ana", registrado_em: "2026-01-01", servidor_id: 23, reg: api.S.rasc, anexos: [{ id: "midia", proximo: 2 }] });
+  context.document.querySelector("#cf_ok").checked = true;
+  await api.acoes["salvar-manutencao"]();
+  const item = await api.idb.get("fila", id);
+  assert.equal(item.servidor_id, 23); assert.equal(item.anexos[0].proximo, 2);
+  assert.equal((await api.idb.all("fila")).length, 1);
+  assert.notEqual(api.S.fase, "ok");
+  assert.match(element("#msg").innerHTML, /já está na fila/);
+});
+
+test("resposta idempotente não apresenta alterações posteriores como enviadas", async () => {
+  const { api, context, element } = app();
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC"; api.S.fase = "confirmar";
+  api.S.rasc = { placa: "ABC", categoria: "pneus_rodas", criticidade: "leve", odometro: 1, horimetro: 1, descricao: "alteração posterior" };
+  context.fetch = async () => ({ ok: true, json: async () => ({ ok: true, id: 23, duplicado: true }) });
+  element("#cf_ok").checked = true;
+  await api.acoes["salvar-manutencao"]();
+  assert.equal(api.S.okNum, "dup");
+  assert.equal(api.S.okReg, null);
+  assert.match(element("#app").innerHTML, /alterações neste rascunho não foram enviadas/);
+});
+
+test("rascunhos permanecem separados por caminhão", async () => {
+  const { api, controls } = app();
+  api.S.tela = "manutencao"; api.S.tipo = "manutencao"; api.S.veiculo = "ABC"; api.S.listas = { veiculos: [{ placa: "ABC" }, { placa: "XYZ" }] };
+  const desc = { id: "ma_desc", type: "textarea", value: "Falha ABC", dataset: {}, tagName: "TEXTAREA" };
+  controls.push(desc); api.render(); await api.guardarContexto(true);
+  await api.acoes.ir({ dataset: { t: "home" } });
+  api.acoes["trocar-veiculo"]();
+  api.S.veiculo = "XYZ"; desc.value = "";
+  await api.acoes.ir({ dataset: { t: "manutencao" } });
+  assert.notEqual(desc.value, "Falha ABC");
+  await api.acoes.ir({ dataset: { t: "home" } });
+  api.acoes["trocar-veiculo"]();
+  api.S.veiculo = "ABC"; desc.value = "";
+  await api.acoes.ir({ dataset: { t: "manutencao" } });
+  assert.equal(desc.value, "Falha ABC");
+  await api.guardarContexto(true);
 });
