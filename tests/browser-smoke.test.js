@@ -65,11 +65,21 @@ test("navegação, câmera, reinício e troca de usuário no navegador", { skip:
     const ready = selector => waitFor(() => evaluate(`!!document.querySelector(${JSON.stringify(selector)})`));
     const click = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
     const value = (selector, v) => evaluate(`(() => { const e=document.querySelector(${JSON.stringify(selector)}); e.value=${JSON.stringify(v)}; e.dispatchEvent(new Event("input",{bubbles:true})); e.dispatchEvent(new Event("change",{bubbles:true})); })()`);
+    await call("Emulation.setDeviceMetricsOverride", { width: 360, height: 780, deviceScaleFactor: 1, mobile: true });
     await ready("#lg_nome"); await waitFor(() => evaluate('Array.from(document.querySelector("#lg_nome").options).some(x=>x.value==="Ana")'));
     await value("#lg_nome", "Ana"); await value("#lg_pin", "1234"); await click('[data-act="entrar"]');
     await ready("#veiculo"); await value("#veiculo", "ABC"); await click('[data-act="selecionar-veiculo"]');
     await ready('[data-t="manutencao"]'); await click('[data-t="manutencao"]');
     await ready("#ma_desc"); await value("#ma_desc", "Vazamento no freio"); await value("#ma_odo", "123");
+    const layout = await evaluate(`(() => {
+      const faixa=document.querySelector(".topo-acoes").getBoundingClientRect();
+      const inicio=document.querySelector('.topo-acoes [data-t="home"]').getBoundingClientRect();
+      const relatos=document.querySelector('.topo-acoes [data-t="manutencoes"]').getBoundingClientRect();
+      return { esquerda: inicio.left-faixa.left, direita: faixa.right-relatos.right, separacao: relatos.left-inicio.right, alinhamento: Math.abs(inicio.top-relatos.top), largura: faixa.width };
+    })()`);
+    assert.ok(layout.largura >= 300);
+    assert.ok(Math.abs(layout.esquerda) < 1 && Math.abs(layout.direita) < 1, JSON.stringify(layout));
+    assert.ok(layout.separacao > 50 && layout.alinhamento < 1, JSON.stringify(layout));
     assert.equal(await evaluate('document.querySelector("#ma_cam").getAttribute("capture")'), "environment");
     await evaluate(`(() => { const el=document.querySelector("#ma_cam"), dt=new DataTransfer(); dt.items.add(new File(["foto"],"foto.jpg",{type:"image/jpeg"})); el.files=dt.files; el.dispatchEvent(new Event("change",{bubbles:true})); })()`);
     await waitFor(() => evaluate('window.__frota.S.anexos.length === 1'));
