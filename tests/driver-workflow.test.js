@@ -26,7 +26,7 @@ function app(shared) {
     fetch: async () => { throw new Error("offline"); }
   };
   context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) };
-  let source = fs.readFileSync("app.js", "utf8");
+  let source = fs.readFileSync(process.env.FROTA_APP_SOURCE || "app.js", "utf8");
   source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes, carregarMeus, guardarContexto };");
   source = source.replace("  iniciar();", "");
   vm.runInNewContext(source, context);
@@ -196,6 +196,25 @@ test("registros aprovados aparecem na lista mas informam por que não entram no 
   assert.match(element("#app").innerHTML, /R\$ 100,00/);
   assert.match(element("#app").innerHTML, /200 km/);
   assert.match(element("#app").innerHTML, /1 registro.*após o período/);
+});
+
+test("abastecimento aprovado de quatro dias aparece em registros e painel de 30 dias", async () => {
+  const { api, context, element } = app();
+  const d = new Date(); d.setDate(d.getDate() - 4);
+  const data = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const registro = { _tipo: "abast", status: "aprovado", data_abast: data, criado_em: new Date().toISOString(),
+    placa: "ABC", combustivel: "Diesel", posto: "Posto", valor_total: 100, valor_litro: 5, litros: 20, odometro: 1000, km_rodados: null };
+  context.fetch = async () => ({ ok: true, json: async () => [registro] });
+  api.S.tela = "meus"; await api.carregarMeus(); api.render();
+  assert.match(element("#app").innerHTML, /Aprovado/);
+  api.S.tela = "dre"; api.S.dreDias = 30; await api.carregarMeus(); api.render();
+  const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 100,00/);
+  assert.match(html, /20,00 L/);
+  assert.match(html, /Gasto por dia \(R\$\)<\/h2><div class="dre-graf">/);
+  assert.match(html, /Rendimento \(km\/L\)<\/h2><p class="peq">Sem dados no período/);
+  assert.match(html, /Alguns abastecimentos não têm distância calculada/);
+  assert.doesNotMatch(html, /Nenhum registro elegível/);
 });
 
 test("datas ISO com hora no dia atual entram no painel e no gráfico diário", () => {
