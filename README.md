@@ -14,6 +14,8 @@ Antes de publicar esta versão do app, aplique no banco a migração administrat
 
 Execute também `supabase_app_ultimos_abastecimentos.sql` no Supabase para que a consulta apresente o último abastecimento conhecido mesmo fora dos últimos 30 dias. Sem essa atualização, o aplicativo só pode mostrar os registros disponibilizados pela versão instalada da função.
 
+No painel, litros são calculados como valor total dividido pelo preço por litro, arredondados a duas casas, quando esses valores estão disponíveis. O preço médio usa a soma dos valores dividida pela soma dos litros correspondentes; rendimento e custo por km usam somente abastecimentos com distância, litros e valor válidos. O rendimento pressupõe tanque cheio. O painel usa as distâncias e os registros retornados pela RPC `app_meus`, não a prévia do celular; uma distância ausente não é tratada como zero. Os últimos 7 ou 30 dias incluem hoje e não incluem registros ainda na fila.
+
 O tema inicialmente acompanha o sistema operacional. Ao selecionar o tema claro ou escuro, a escolha fica guardada no navegador.
 
 Para executar os testes locais, use `node --test tests\driver-workflow.test.js`.

@@ -20,10 +20,12 @@ async function waitFor(fn, timeout = 15000) {
 
 test("navegação, câmera, reinício e troca de usuário no navegador", { skip: !edge || !fs.existsSync(edge), timeout: 60000 }, async () => {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "frota-browser-test-"));
+  const hoje = new Date(), data = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-${String(hoje.getDate()).padStart(2, "0")}`;
   const respostas = {
     app_nomes: ["Ana", "Bia"],
     app_listas: { veiculos: [{ placa: "ABC", tipo: "Caminhão" }], combustiveis: ["Diesel"], postos: [], clientes: [] },
-    app_locais: [], app_manutencoes: [], app_historico_manutencao: [], app_meus: []
+    app_locais: [], app_manutencoes: [], app_historico_manutencao: [],
+    app_meus: [{ _tipo: "abast", status: "aprovado", data_abast: data, placa: "ABC", posto: "Posto", valor_total: 100, valor_litro: 5, litros: 20, km_rodados: 200 }]
   };
   const server = http.createServer((req, res) => {
     if (req.url.startsWith("/rest/v1/rpc/")) {
@@ -108,6 +110,10 @@ test("navegação, câmera, reinício e troca de usuário no navegador", { skip:
     await ready("#ma_desc");
     assert.equal(await evaluate('document.querySelector("#ma_desc").value'), "Vazamento no freio");
     assert.equal(await evaluate("window.__frota.S.anexos.length"), 1);
+    await click('[data-t="home"]'); await ready('[data-t="dre"]'); await click('[data-t="dre"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /R\$ 100,00/);
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /10,00/);
     await call("Browser.close").catch(() => {});
   } finally {
     if (ws) ws.close();

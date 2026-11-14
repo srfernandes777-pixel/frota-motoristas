@@ -27,7 +27,7 @@ function app(shared) {
   };
   context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) };
   let source = fs.readFileSync("app.js", "utf8");
-  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes, guardarContexto };");
+  source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes, carregarMeus, guardarContexto };");
   source = source.replace("  iniciar();", "");
   vm.runInNewContext(source, context);
   const api = context.window.__frota, stores = shared.stores;
@@ -118,6 +118,87 @@ test("períodos de 7 e 30 dias preservam resultados e identificam corretamente o
   api.S.ultimosAbast = []; api.render();
   assert.match(element("#app").innerHTML, /Nenhum abastecimento nos últimos 30 dias/);
   assert.doesNotMatch(element("#app").innerHTML, /fora do período selecionado/);
+});
+
+test("painel calcula indicadores ponderados e exclui dados fora do período ou sem distância", async () => {
+  const { api, context, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const registro = (dias, campos = {}) => ({ _tipo: "abast", status: "aprovado", data_abast: data(dias), criado_em: "2026-01-01", placa: "ABC", posto: "Posto", ...campos });
+  const dados = [
+    registro(0, { valor_total: 100, valor_litro: 5, litros: 999, km_rodados: 200, consumo: 999 }),
+    registro(1, { valor_total: 60, valor_litro: 6, litros: null, km_rodados: 50, consumo: null }),
+    registro(2, { valor_total: 50, valor_litro: 5, km_rodados: null }),
+    registro(7, { valor_total: 500, valor_litro: 5, km_rodados: 100 }),
+    registro(-1, { valor_total: 1000, valor_litro: 5, km_rodados: 100 }),
+    registro(0, { status: "cancelado", valor_total: 1000, valor_litro: 5, km_rodados: 100 }),
+    { _tipo: "coleta", status: "pendente", data_coleta: data(0), peso_liquido: 20 }
+  ];
+  context.fetch = async () => ({ ok: true, json: async () => dados });
+  api.S.tela = "dre"; api.S.dreDias = 7; await api.carregarMeus(); api.render();
+  const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 210,00/); assert.match(html, /40,00 L/);
+  assert.match(html, /R\$ 5,25/); assert.match(html, /250 km/);
+  assert.match(html, /8,33<\/b><span>Rendimento km\/L/);
+  assert.match(html, /R\$ 0,64/); assert.match(html, /20 kg/);
+  assert.match(html, /R\$ 10,50/); assert.match(html, /Alguns abastecimentos não têm distância calculada/);
+  assert.doesNotMatch(html, /999,0/);
+});
+
+test("painel não apresenta zero ou rendimento inventado para campos indisponíveis", () => {
+  const { api, element } = app();
+  api.S.tela = "dre"; api.S.dreDias = 30;
+  const d = new Date(), hoje = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  api.S.meus = [{ _tipo: "abast", status: "pendente", data_abast: hoje, placa: "ABC", valor_total: null, valor_litro: null, litros: null, km_rodados: 500, consumo: 2 }];
+  api.render(); const html = element("#app").innerHTML;
+  assert.match(html, /—<\/b><span>Gasto combustível/);
+  assert.match(html, /—<\/b><span>Litros/);
+  assert.match(html, /—<\/b><span>Rendimento km\/L/);
+  assert.match(html, /totais podem estar incompletos/);
+});
+
+test("resposta incompatível da RPC não aparece como painel sem registros", async () => {
+  const { api, context, element } = app();
+  api.S.tela = "dre";
+  context.fetch = async () => ({ ok: true, json: async () => [{ tipo: "abast" }] });
+  await api.carregarMeus(); api.render();
+  assert.equal(api.S.meus, null);
+  assert.match(element("#app").innerHTML, /Resposta inválida da lista de registros/);
+  assert.doesNotMatch(element("#app").innerHTML, /Nenhum registro enviado/);
+});
+
+test("histórico da frota apresenta litros calculados e evita zero quando dados faltam", () => {
+  const { api, element } = app();
+  api.S.tela = "frota"; api.S.abastVeiculo = "ABC"; api.S.abastDias = 30;
+  api.S.listas = { veiculos: [{ placa: "ABC" }] };
+  api.S.ultimosAbast = [{ placa: "ABC", data_abast: "2020-01-02", motorista: "Ana", combustivel: "Diesel", valor_total: 100, valor_litro: 5, litros: 999, odometro: 200 }];
+  api.render();
+  assert.match(element("#app").innerHTML, /20,00 L/);
+  assert.doesNotMatch(element("#app").innerHTML, /999,00 L/);
+  api.S.ultimosAbast[0].valor_total = null; api.S.ultimosAbast[0].valor_litro = null; api.S.ultimosAbast[0].litros = null;
+  api.render(); assert.match(element("#app").innerHTML, /<b>—<\/b><small>Quantidade/);
+});
+
+test("litros arredondam corretamente em limite de meio centésimo", () => {
+  const { api, element } = app();
+  api.S.tela = "frota"; api.S.abastVeiculo = "ABC"; api.S.abastDias = 30;
+  api.S.listas = { veiculos: [{ placa: "ABC" }] };
+  api.S.ultimosAbast = [{ placa: "ABC", data_abast: "2020-01-02", motorista: "Ana", combustivel: "Diesel", valor_total: 2.01, valor_litro: 2, litros: null, odometro: 200 }];
+  api.render();
+  assert.match(element("#app").innerHTML, /1,01 L/);
+  api.S.tela = "dre"; api.S.meus = [{ _tipo: "abast", status: "aprovado", data_abast: new Date().toLocaleDateString("en-CA"), placa: "ABC", valor_total: 2.01, valor_litro: 2, km_rodados: 101 }];
+  api.S.dreDias = 30; api.render();
+  assert.match(element("#app").innerHTML, /100,00<\/b><span>Rendimento km\/L/);
+});
+
+test("envio em segundo plano atualiza o painel com dados do servidor", async () => {
+  const { api, context, element } = app();
+  const hoje = new Date(), data = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}-${String(hoje.getDate()).padStart(2, "0")}`;
+  api.S.tela = "dre"; api.S.meus = [];
+  await api.idb.put("fila", { id_cliente: "ab1", tipo: "abast", motorista: "Ana", registrado_em: "2026-01-01", reg: { placa: "ABC", odometro: 120 } });
+  context.fetch = async url => ({ ok: true, json: async () => url.endsWith("app_meus") ? [{ _tipo: "abast", status: "pendente", data_abast: data, placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 }] : { id: 1 } });
+  await api.sincronizar();
+  assert.match(element("#app").innerHTML, /R\$ 100,00/);
+  assert.match(element("#app").innerHTML, /200 km/);
 });
 
 test("envio retoma evidência em blocos sem reenviar relato nem descartar fila", async () => {

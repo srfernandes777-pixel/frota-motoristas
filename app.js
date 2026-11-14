@@ -13,6 +13,15 @@
   const fmtInt = v => Math.round(Number(v)).toLocaleString("pt-BR");
   const fmtDec = v => String(Math.round(Number(v) * 100) / 100).replace(".", ",");
   const round2 = v => Math.round(v * 100) / 100;
+  function litrosPorValores(valor, preco) {
+    if (!Number.isFinite(valor) || !Number.isFinite(preco) || valor <= 0 || preco <= 0) return null;
+    const centavos = Math.round(valor * 100), precoCentavos = Math.round(preco * 100);
+    if (Number.isSafeInteger(centavos * 100) && Number.isSafeInteger(precoCentavos) && precoCentavos > 0 &&
+        Math.abs(valor - centavos / 100) < 1e-9 && Math.abs(preco - precoCentavos / 100) < 1e-9) {
+      return Math.round(centavos * 100 / precoCentavos) / 100;
+    }
+    return round2(valor / preco);
+  }
   function parseNum(txt) {
     let t = String(txt || "").replace(/[^\d,.]/g, "");
     if (!t) return null;
@@ -272,8 +281,8 @@
         : falhas ? { t: `⚠️ ${falhas} registro(s) não aceito(s) pelo servidor: ${ultimoErro}`, c: "erro" }
         : enviados ? { t: `✅ ${enviados} registro(s) enviado(s)!`, c: "ok" } : { t: "Não há nada para enviar.", c: "info" };
     } else if (enviados) S.syncMsg = null;
-    if (["home", "meus", "frota", "manutencoes"].includes(S.tela)) {
-      if (S.tela === "meus") await carregarMeus();
+    if (["home", "meus", "dre", "frota", "manutencoes"].includes(S.tela)) {
+      if (S.tela === "meus" || S.tela === "dre") await carregarMeus();
       if (S.tela === "frota") await carregarUltimosAbast();
       if (S.tela === "manutencoes" && enviados) await carregarManutencoes();
       render();
@@ -479,7 +488,8 @@
     const r = S.rasc;
     return `${topo("Confira os dados")}<div class="card"><b>Motorista:</b> ${esc(S.sessao.nome)}<br><b>Placa:</b> ${esc(r.placa)}<br><b>Combustível:</b> ${esc(r.combustivel)}<br>
       <b>Data:</b> ${brData(r.data_abast)}<br><b>Posto:</b> ${esc(r.posto)}<br><b>Valor total:</b> R$ ${num(r.valor_total)}<br><b>Valor por litro:</b> R$ ${num(r.valor_litro)}<br><b>Odômetro:</b> ${fmtInt(r.odometro)} km</div>
-      <div class="metr"><div><b>${num(r.litros)}</b><span>Litros</span></div><div><b>${r.km != null ? fmtInt(r.km) : "—"}</b><span>Km rodados</span></div><div><b>${r.consumo != null ? num(r.consumo, 1) : "—"}</b><span>Km/L</span></div></div>
+      <div class="metr"><div><b>${num(r.litros)}</b><span>Litros estimados</span></div><div><b>${r.km != null ? fmtInt(r.km) : "—"}</b><span>Km estimados</span></div><div><b>${r.consumo != null ? num(r.consumo) : "—"}</b><span>Km/L estimado</span></div></div>
+      <p class="peq">Prévia baseada no último odômetro conhecido neste celular; pode mudar após o envio ou conferência. O rendimento pressupõe tanque cheio.</p>
       ${miniaturas(S.fotos)}${(r.alertas || []).map(a => `<div class="aviso">${esc(a)}</div>`).join("")}
       <label class="chk"><input type="checkbox" id="cf_ok"> Confirmo que os dados conferem com o comprovante</label><div id="msg"></div>
       <div class="linha" style="margin-top:1rem"><button data-act="voltar-form">← Corrigir</button><button class="pri" id="btn_salvar" data-act="salvar" disabled>${online() ? "✅ Enviar" : "💾 Salvar (envio depois)"}</button></div>`;
@@ -560,36 +570,63 @@
     const mx = Math.max(...pts.map(p => p.v)) || 1;
     return `<div class="dre-graf">${pts.map(p => `<div class="dre-col${baixo && baixo(p.v) ? " baixo" : ""}"><em>${fmt(p.v)}</em><i style="height:${Math.max(3, p.v / mx * 80)}%"></i></div>`).join("")}</div><div class="dre-eixo">${pts.map(p => `<span>${esc(p.rot)}</span>`).join("")}</div>`;
   }
+  const numeroValido = v => {
+    if (v == null || (typeof v === "string" && !v.trim()) || (typeof v !== "string" && typeof v !== "number")) return null;
+    const n = Number(v); return Number.isFinite(n) ? n : null;
+  };
+  function valoresAbastecimento(r) {
+    const valor = numeroValido(r.valor_total), preco = numeroValido(r.valor_litro);
+    const informado = numeroValido(r.litros), distancia = numeroValido(r.km_rodados);
+    const litros = valor != null && valor > 0 && preco != null && preco > 0
+      ? litrosPorValores(valor, preco) : informado != null && informado > 0 ? informado : null;
+    return {
+      valor: valor != null && valor >= 0 ? valor : null,
+      litros: litros != null && litros > 0 ? litros : null,
+      km: distancia != null && distancia > 0 ? distancia : null
+    };
+  }
   function vDre() {
-    const dias = S.dreDias || 30, desde = diasAtras(dias);
+    const dias = S.dreDias || 30, desde = diasAtras(dias - 1), ate = hoje();
     const cab = `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📊 Meu painel</h2>
       <div class="dre-per">${[7, 30].map(d => `<button data-act="dre-dias" data-d="${d}" class="${dias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>`;
     if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
-    const vale = r => ["pendente", "aprovado"].includes(r.status), N = x => Number(x) || 0, soma = (l, f) => l.reduce((t, r) => t + N(r[f]), 0);
-    const ab = S.meus.filter(r => r._tipo === "abast" && vale(r) && String(r.data_abast) >= desde)
+    const vale = r => ["pendente", "aprovado"].includes(r.status);
+    const noPeriodo = data => typeof data === "string" && data >= desde && data <= ate;
+    const ab = S.meus.filter(r => r._tipo === "abast" && vale(r) && noPeriodo(r.data_abast))
       .sort((a, b) => String(a.data_abast).localeCompare(String(b.data_abast)) || String(a.criado_em).localeCompare(String(b.criado_em)));
-    const co = S.meus.filter(r => r._tipo === "coleta" && vale(r) && String(r.data_coleta) >= desde);
+    const co = S.meus.filter(r => r._tipo === "coleta" && vale(r) && noPeriodo(r.data_coleta));
     if (!ab.length && !co.length) return `${cab}<div class="info">Nenhum registro enviado neste período.</div>`;
-    const gasto = soma(ab, "valor_total"), litros = soma(ab, "litros"), peso = soma(co, "peso_liquido");
-    const cKm = ab.filter(r => N(r.km_rodados) > 0), km = soma(cKm, "km_rodados"), lKm = soma(cKm, "litros");
-    const cons = lKm ? km / lKm : null, custoKm = km ? soma(cKm, "valor_total") / km : null;
+    const dados = ab.map(r => ({ r, ...valoresAbastecimento(r) }));
+    const soma = (lista, campo) => lista.reduce((total, item) => total + item[campo], 0);
+    const comValor = dados.filter(x => x.valor != null), comLitros = dados.filter(x => x.litros != null);
+    const gasto = soma(comValor, "valor"), litros = soma(comLitros, "litros");
+    const pesoValores = co.map(r => numeroValido(r.peso_liquido)).filter(x => x != null && x >= 0);
+    const peso = pesoValores.reduce((total, x) => total + x, 0);
+    const cKm = dados.filter(x => x.km != null && x.litros != null && x.valor != null && x.valor > 0);
+    const km = soma(cKm, "km"), lKm = soma(cKm, "litros");
+    const cons = lKm > 0 ? km / lKm : null, custoKm = km > 0 ? soma(cKm, "valor") / km : null;
+    const completosPreco = dados.filter(x => x.valor != null && x.valor > 0 && x.litros != null);
+    const litrosPreco = soma(completosPreco, "litros"), valorPreco = soma(completosPreco, "valor");
     const kpi = (v, t) => `<div><b>${v}</b><span>${t}</span></div>`, tr = v => v == null ? "—" : v;
-    const porDia = {}; ab.forEach(r => { porDia[r.data_abast] = (porDia[r.data_abast] || 0) + N(r.valor_total); });
+    const porDia = {}; comValor.forEach(x => { porDia[x.r.data_abast] = (porDia[x.r.data_abast] || 0) + x.valor; });
     const gDia = Object.keys(porDia).sort().slice(-15).map(d => ({ rot: brData(d).slice(0, 2), v: porDia[d] }));
-    const gCons = ab.filter(r => N(r.consumo) > 0).slice(-15).map(r => ({ rot: brData(String(r.data_abast)).slice(0, 2), v: N(r.consumo) }));
-    const pl = {}; ab.forEach(r => { const p = pl[r.placa] = pl[r.placa] || { g: 0, l: 0, km: 0, lk: 0 }; p.g += N(r.valor_total); p.l += N(r.litros); if (N(r.km_rodados) > 0) { p.km += N(r.km_rodados); p.lk += N(r.litros); } });
-    const linhasPl = Object.keys(pl).map(k => `<tr><td>${esc(k)}</td><td>R$ ${num(pl[k].g)}</td><td>${num(pl[k].l, 1)} L</td><td>${pl[k].lk ? num(pl[k].km / pl[k].lk, 1) : "—"}</td></tr>`).join("");
-    const ult = ab.slice().reverse().slice(0, 10).map(r => `<tr><td>${brData(String(r.data_abast)).slice(0, 5)}</td><td>${esc(r.posto || "")}</td><td>R$ ${num(r.valor_total)}</td><td>${N(r.consumo) > 0 ? num(r.consumo, 1) : "—"}</td></tr>`).join("");
+    const gCons = cKm.slice(-15).map(x => ({ rot: brData(x.r.data_abast).slice(0, 2), v: x.km / x.litros }));
+    const pl = Object.create(null); dados.forEach(x => { const p = pl[x.r.placa] = pl[x.r.placa] || { g: 0, l: 0, ng: 0, nl: 0, km: 0, lk: 0 }; if (x.valor != null) { p.g += x.valor; p.ng++; } if (x.litros != null) { p.l += x.litros; p.nl++; } if (x.km != null && x.litros != null && x.valor != null && x.valor > 0) { p.km += x.km; p.lk += x.litros; } });
+    const linhasPl = Object.keys(pl).map(k => `<tr><td>${esc(k)}</td><td>${pl[k].ng ? "R$ " + num(pl[k].g) : "—"}</td><td>${pl[k].nl ? num(pl[k].l) + " L" : "—"}</td><td>${pl[k].lk ? num(pl[k].km / pl[k].lk) : "—"}</td></tr>`).join("");
+    const ult = dados.slice().reverse().slice(0, 10).map(x => `<tr><td>${brData(x.r.data_abast).slice(0, 5)}</td><td>${esc(x.r.posto || "")}</td><td>${x.valor != null ? "R$ " + num(x.valor) : "—"}</td><td>${x.km != null && x.litros != null && x.valor != null && x.valor > 0 ? num(x.km / x.litros) : "—"}</td></tr>`).join("");
     return `${cab}
       <h2>Resumo (DRE)</h2>
-      <div class="dre-kpi">${kpi("R$ " + num(gasto), "Gasto combustível")}${kpi(num(litros, 1) + " L", "Litros")}${kpi(litros ? "R$ " + num(gasto / litros) : "—", "Preço médio/L")}</div>
-      <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons, 1)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>
-      <div class="dre-kpi">${kpi(co.length, "Coletas")}${kpi(peso ? num(peso, 0) + " kg" : "—", "Peso líquido")}${kpi(peso ? "R$ " + num(gasto / peso) : "—", "Combustível por kg")}</div>
+      <div class="dre-kpi">${kpi(comValor.length ? "R$ " + num(gasto) : "—", "Gasto combustível")}${kpi(comLitros.length ? num(litros) + " L" : "—", "Litros")}${kpi(litrosPreco > 0 ? "R$ " + num(valorPreco / litrosPreco) : "—", "Preço médio/L")}</div>
+      <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>
+      <div class="dre-kpi">${kpi(co.length, "Coletas")}${kpi(pesoValores.length ? num(peso, 0) + " kg" : "—", "Peso líquido")}${kpi(peso > 0 && comValor.length ? "R$ " + num(gasto / peso) : "—", "Combustível por kg")}</div>
       <h2>Gasto por dia (R$)</h2>${graf(gDia, v => fmtInt(v))}
-      <h2>Rendimento (km/L)</h2>${graf(gCons, v => num(v, 1), v => cons && v < cons * 0.9)}<p class="peq">Barra amarela = abaixo da sua média.</p>
+      <h2>Rendimento (km/L)</h2>${graf(gCons, v => num(v), v => cons && v < cons * 0.9)}<p class="peq">Barra amarela = abaixo da sua média.</p>
       <h2>Por veículo</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Placa</th><th>Gasto</th><th>Litros</th><th>km/L</th></tr>${linhasPl}</table></div>
       <h2>Últimos abastecimentos</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Data</th><th>Posto</th><th>Valor</th><th>km/L</th></tr>${ult}</table></div>
-      <p class="peq">Considera os registros já enviados (aguardando conferência ou aprovados) nos últimos ${dias} dias. Não inclui registros ainda salvos só no celular.</p>`;
+      <p class="peq">Considera os registros já enviados (aguardando conferência ou aprovados) nos últimos ${dias} dias, incluindo hoje. Não inclui registros ainda salvos só no celular. Rendimento e custo por km usam somente abastecimentos com distância, litros e valor positivos; pressupõem tanque cheio. As distâncias são as informadas pelo servidor.</p>
+      ${dados.some(x => x.valor == null || x.litros == null) ? '<div class="aviso">Alguns abastecimentos não têm valor ou litros válidos; os totais podem estar incompletos.</div>' : ""}
+      ${dados.some(x => x.km == null) ? '<div class="info">Alguns abastecimentos não têm distância calculada; não entram no rendimento nem no custo por km.</div>' : ""}
+      ${pesoValores.length < co.length ? '<div class="info">Algumas coletas não têm peso líquido informado; o total de peso pode estar incompleto.</div>' : ""}`;
   }
   function vMeus() {
     const fila = (S._fila || []).filter(i => i.motorista === S.sessao.nome);
@@ -621,11 +658,13 @@
       const exibidos = fora ? todos.slice(0, 1) : registros;
       abast = `${avisoAbast}<div class="dre-per abast-periodo">${[7, 30].map(d => `<button data-act="abast-dias" data-d="${d}" class="${S.abastDias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>
         ${fora ? `<div class="info">Nenhum abastecimento nos últimos ${S.abastDias} dias. Último conhecido, fora do período selecionado:</div>` : ""}
-        ${exibidos.length ? `<div class="abast-historico">${exibidos.map(r => `<div class="card abast-hist-card">
+        ${exibidos.length ? `<div class="abast-historico">${exibidos.map(r => {
+          const v = valoresAbastecimento(r), odometro = numeroValido(r.odometro);
+          return `<div class="card abast-hist-card">
             <div class="abast-hist-top"><b>${brData(String(r.data_abast))}</b><span>${STATUS[r.status] || esc(r.status)}</span></div>
             <div><b>${esc(r.motorista)}</b> abasteceu ${esc(r.combustivel)}${r.posto ? ` no ${esc(r.posto)}` : ""}.</div>
-            <div class="abast-hist-dados"><span><b>${num(r.litros, 1)} L</b><small>Quantidade</small></span><span><b>${fmtInt(r.odometro)} km</b><small>Odômetro</small></span><span><b>R$ ${num(r.valor_total)}</b><small>Valor total</small></span></div>
-          </div>`).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
+            <div class="abast-hist-dados"><span><b>${v.litros != null ? num(v.litros) + " L" : "—"}</b><small>Quantidade</small></span><span><b>${odometro != null ? fmtInt(odometro) + " km" : "—"}</b><small>Odômetro</small></span><span><b>${v.valor != null ? "R$ " + num(v.valor) : "—"}</b><small>Valor total</small></span></div>
+          </div>`; }).join("")}</div>` : `<p class="peq">Nenhum abastecimento nos últimos ${S.abastDias} dias para este veículo.</p>`}`;
     }
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>🚚 Registros da Frota</h2>
       <p class="peq">Consulte os abastecimentos feitos por qualquer motorista. Escolha um veículo e o período.</p>${opcoesAbast}
@@ -671,7 +710,7 @@
   }
   async function carregarMeus() {
     const sessao = S.sessao;
-    try { const dados = await rpc("app_meus", { p_token: token() }); if (S.sessao === sessao) { S.meus = dados; S.meusErro = ""; } }
+    try { const dados = await rpc("app_meus", { p_token: token() }); if (!Array.isArray(dados) || dados.some(r => !r || typeof r !== "object" || !["abast", "coleta"].includes(r._tipo))) throw new Error("Resposta inválida da lista de registros. Avise o responsável para verificar a função app_meus."); if (S.sessao === sessao) { S.meus = dados; S.meusErro = ""; } }
     catch (e) { if (S.sessao !== sessao) return; S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
   async function carregarUltimosAbast() {
@@ -729,15 +768,16 @@
     if (S.fotos.length + fotosExistentes() === 0) erros.push("Tire pelo menos 1 foto do comprovante (ou escolha da galeria).");
     let litros = null, km = null, consumo = null, odoMsg = null;
     if (!erros.length) {
-      litros = round2(total / litro);
+      litros = litrosPorValores(total, litro);
+      if (litros <= 0) erros.push("O valor informado resulta em menos de 0,01 litro. Confira o valor e o preço.");
       const ult = ultimoOdo(placa, S.edit && S.edit.origem === "fila" ? S.edit.id : null);
       if (ult > 0) {
         if (odo <= ult) odoMsg = `O odômetro (${fmtInt(odo)} km) precisa ser maior que o último registrado desta placa (${fmtInt(ult)} km). Confira o número.`;
         else if (odo - ult > MAX_SALTO) odoMsg = `Diferença de ${fmtInt(odo - ult)} km desde o último registro é grande demais. Confira o odômetro.`;
         else {
-          km = odo - ult; consumo = round2(km / litros);
+          km = odo - ult; consumo = litros > 0 ? round2(km / litros) : null;
           const moto = tipoVeiculo(placa).toLowerCase() === "moto", f = moto ? [10, 70] : [1.5, 25];
-          if (consumo < f[0] || consumo > f[1]) alertas.push(`Consumo calculado de ${num(consumo, 1)} km/L está fora do comum. Confira os valores.`);
+          if (consumo != null && (consumo < f[0] || consumo > f[1])) alertas.push(`Consumo calculado de ${num(consumo, 1)} km/L está fora do comum. Confira os valores.`);
         }
       } else alertas.push("Primeiro registro deste veículo no sistema.");
       if (litros > 400) alertas.push(`${fmtInt(litros)} litros é muito para um abastecimento. Confira o valor.`);
@@ -956,7 +996,7 @@
     }
     guardarContexto(true);
   });
-  window.addEventListener("online", async () => { if (S.sessao) { await atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "frota", "login", "veiculos"].includes(S.tela)) render(); });
+  window.addEventListener("online", async () => { if (S.sessao) { await atualizarListas(); sincronizar(); if (S.tela === "frota") await carregarUltimosAbast(); if (S.tela === "dre") await carregarMeus(); } else if (S.tela === "login") await carregarNomes(); if (["home", "meus", "dre", "frota", "login", "veiculos"].includes(S.tela)) render(); });
   window.addEventListener("offline", () => { if (["home", "meus", "frota", "login"].includes(S.tela)) render(); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) guardarContexto(true); else if (S.sessao) sincronizar(); });
   setInterval(() => { if (S.sessao && S.filaN && online()) sincronizar(); }, 30000);
