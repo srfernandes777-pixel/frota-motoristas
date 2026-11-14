@@ -114,6 +114,28 @@ test("navegação, câmera, reinício e troca de usuário no navegador", { skip:
     await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
     assert.match(await evaluate('document.querySelector("#app").textContent'), /R\$ 100,00/);
     assert.match(await evaluate('document.querySelector("#app").textContent'), /10,00/);
+    const graficos = await evaluate(`Array.from(document.querySelectorAll(".dre-graf .dre-col i"), el => ({ altura: el.getBoundingClientRect().height, largura: el.getBoundingClientRect().width }))`);
+    assert.equal(graficos.length, 2);
+    assert.ok(graficos.every(g => g.altura > 0 && g.largura > 0), JSON.stringify(graficos));
+    respostas.app_meus = [];
+    await click('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("Nenhum registro elegível")'));
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /Gasto por dia/);
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /Rendimento \(km\/L\)/);
+    respostas.app_meus = [{ _tipo: "abast", status: "aprovado", data_abast: data, placa: "ABC", posto: "Posto", valor_total: 100, valor_litro: 5, litros: 20, km_rodados: 200 }];
+    await click('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
+    await waitFor(() => evaluate('!!navigator.serviceWorker.controller'));
+    await call("Network.enable");
+    await call("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+    await click('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("Sem sinal")'));
+    await call("Page.reload");
+    await ready('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("Sem sinal")'));
+    await call("Network.emulateNetworkConditions", { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await click('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
     await call("Browser.close").catch(() => {});
   } finally {
     if (ws) ws.close();

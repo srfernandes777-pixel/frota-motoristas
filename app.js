@@ -588,14 +588,14 @@
   function vDre() {
     const dias = S.dreDias || 30, desde = diasAtras(dias - 1), ate = hoje();
     const cab = `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📊 Meu painel</h2>
-      <div class="dre-per">${[7, 30].map(d => `<button data-act="dre-dias" data-d="${d}" class="${dias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>`;
+      <div class="dre-per">${[7, 30].map(d => `<button data-act="dre-dias" data-d="${d}" class="${dias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>
+      <button data-act="atualizar-painel">🔄 Atualizar painel</button>`;
     if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
     const vale = r => ["pendente", "aprovado"].includes(r.status);
     const noPeriodo = data => typeof data === "string" && data >= desde && data <= ate;
     const ab = S.meus.filter(r => r._tipo === "abast" && vale(r) && noPeriodo(r.data_abast))
       .sort((a, b) => String(a.data_abast).localeCompare(String(b.data_abast)) || String(a.criado_em).localeCompare(String(b.criado_em)));
     const co = S.meus.filter(r => r._tipo === "coleta" && vale(r) && noPeriodo(r.data_coleta));
-    if (!ab.length && !co.length) return `${cab}<div class="info">Nenhum registro enviado neste período.</div>`;
     const dados = ab.map(r => ({ r, ...valoresAbastecimento(r) }));
     const soma = (lista, campo) => lista.reduce((total, item) => total + item[campo], 0);
     const comValor = dados.filter(x => x.valor != null), comLitros = dados.filter(x => x.litros != null);
@@ -615,6 +615,7 @@
     const linhasPl = Object.keys(pl).map(k => `<tr><td>${esc(k)}</td><td>${pl[k].ng ? "R$ " + num(pl[k].g) : "—"}</td><td>${pl[k].nl ? num(pl[k].l) + " L" : "—"}</td><td>${pl[k].lk ? num(pl[k].km / pl[k].lk) : "—"}</td></tr>`).join("");
     const ult = dados.slice().reverse().slice(0, 10).map(x => `<tr><td>${brData(x.r.data_abast).slice(0, 5)}</td><td>${esc(x.r.posto || "")}</td><td>${x.valor != null ? "R$ " + num(x.valor) : "—"}</td><td>${x.km != null && x.litros != null && x.valor != null && x.valor > 0 ? num(x.km / x.litros) : "—"}</td></tr>`).join("");
     return `${cab}
+      ${!ab.length && !co.length ? '<div class="info">Nenhum registro elegível neste período. Confira a conexão e seus registros enviados ou atualize o painel.</div>' : ""}
       <h2>Resumo (DRE)</h2>
       <div class="dre-kpi">${kpi(comValor.length ? "R$ " + num(gasto) : "—", "Gasto combustível")}${kpi(comLitros.length ? num(litros) + " L" : "—", "Litros")}${kpi(litrosPreco > 0 ? "R$ " + num(valorPreco / litrosPreco) : "—", "Preço médio/L")}</div>
       <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>
@@ -623,7 +624,7 @@
       <h2>Rendimento (km/L)</h2>${graf(gCons, v => num(v), v => cons && v < cons * 0.9)}<p class="peq">Barra amarela = abaixo da sua média.</p>
       <h2>Por veículo</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Placa</th><th>Gasto</th><th>Litros</th><th>km/L</th></tr>${linhasPl}</table></div>
       <h2>Últimos abastecimentos</h2><div style="overflow-x:auto"><table class="dre-tab"><tr><th>Data</th><th>Posto</th><th>Valor</th><th>km/L</th></tr>${ult}</table></div>
-      <p class="peq">Considera os registros já enviados (aguardando conferência ou aprovados) nos últimos ${dias} dias, incluindo hoje. Não inclui registros ainda salvos só no celular. Rendimento e custo por km usam somente abastecimentos com distância, litros e valor positivos; pressupõem tanque cheio. As distâncias são as informadas pelo servidor.</p>
+      <p class="peq">Mostra somente seus registros enviados, pendentes ou aprovados, criados no servidor nos últimos 30 dias. O filtro de ${dias} dias usa a data do abastecimento ou coleta, incluindo hoje. Não inclui registros ainda na fila, de outros motoristas ou lançamentos feitos apenas no computador. Alterações feitas apenas no computador não aparecem aqui. Rendimento e custo por km usam somente abastecimentos com distância, litros e valor positivos; pressupõem tanque cheio. As distâncias são as informadas pelo servidor e podem estar incompletas ou desatualizadas.</p>
       ${dados.some(x => x.valor == null || x.litros == null) ? '<div class="aviso">Alguns abastecimentos não têm valor ou litros válidos; os totais podem estar incompletos.</div>' : ""}
       ${dados.some(x => x.km == null) ? '<div class="info">Alguns abastecimentos não têm distância calculada; não entram no rendimento nem no custo por km.</div>' : ""}
       ${pesoValores.length < co.length ? '<div class="info">Algumas coletas não têm peso líquido informado; o total de peso pode estar incompleto.</div>' : ""}`;
@@ -710,8 +711,9 @@
   }
   async function carregarMeus() {
     const sessao = S.sessao;
-    try { const dados = await rpc("app_meus", { p_token: token() }); if (!Array.isArray(dados) || dados.some(r => !r || typeof r !== "object" || !["abast", "coleta"].includes(r._tipo))) throw new Error("Resposta inválida da lista de registros. Avise o responsável para verificar a função app_meus."); if (S.sessao === sessao) { S.meus = dados; S.meusErro = ""; } }
-    catch (e) { if (S.sessao !== sessao) return; S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
+    const requisicao = S.meusRequisicao = (S.meusRequisicao || 0) + 1;
+    try { const dados = await rpc("app_meus", { p_token: token() }); if (!Array.isArray(dados) || dados.some(r => !r || typeof r !== "object" || !["abast", "coleta"].includes(r._tipo))) throw new Error("Resposta inválida da lista de registros. Avise o responsável para verificar a função app_meus."); if (S.sessao === sessao && S.meusRequisicao === requisicao) { S.meus = dados; S.meusErro = ""; } }
+    catch (e) { if (S.sessao !== sessao || S.meusRequisicao !== requisicao) return; S.meus = null; S.meusErro = e.rede ? "Sem sinal: não consigo buscar os registros já enviados." : msgErro(e); if (!e.rede && e.message === "sessao_invalida") sessaoExpirada(); }
   }
   async function carregarUltimosAbast() {
     if (!online()) {
@@ -896,6 +898,7 @@
     },
     "salvar-manutencao"() { return salvarManutencao(); },
     ir(a) { return irPara(a.dataset.t); },
+    "atualizar-painel"() { return irPara("dre"); },
     "dre-dias"(a) { S.dreDias = Number(a.dataset.d); render(); },
     "abast-dias"(a) { S.abastDias = Number(a.dataset.d); render(); },
     "marcar-cli"(a) { return acaoMarcar(a.dataset.n, a, a.closest(".card").querySelector(".mloc")); },

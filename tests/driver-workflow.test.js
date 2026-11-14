@@ -166,6 +166,38 @@ test("resposta incompatível da RPC não aparece como painel sem registros", asy
   assert.doesNotMatch(element("#app").innerHTML, /Nenhum registro enviado/);
 });
 
+test("painel vazio mantém resumos e gráficos e explica o alcance da consulta", () => {
+  const { api, element } = app();
+  api.S.tela = "dre"; api.S.meus = [];
+  api.render();
+  const html = element("#app").innerHTML;
+  assert.match(html, /Nenhum registro elegível/);
+  assert.match(html, /Resumo \(DRE\)/);
+  assert.match(html, /Gasto por dia/);
+  assert.match(html, /Rendimento \(km\/L\)/);
+  assert.match(html, /criados no servidor nos últimos 30 dias/);
+  assert.match(html, /data do abastecimento ou coleta/);
+  assert.match(html, /data-act="atualizar-painel"/);
+});
+
+test("consulta antiga não substitui resultado mais recente nem erro atual", async () => {
+  const { api, context } = app(), pendentes = [];
+  context.fetch = () => new Promise(resolve => pendentes.push(resolve));
+  const anterior = api.carregarMeus(), atual = api.carregarMeus();
+  pendentes[1]({ ok: true, json: async () => [{ _tipo: "abast", id: 2 }] });
+  await atual;
+  pendentes[0]({ ok: true, json: async () => [{ _tipo: "abast", id: 1 }] });
+  await anterior;
+  assert.equal(api.S.meus[0].id, 2);
+  const antigoErro = api.carregarMeus(), novo = api.carregarMeus();
+  pendentes[3]({ ok: true, json: async () => [{ _tipo: "coleta", id: 3 }] });
+  await novo;
+  pendentes[2]({ ok: false, json: async () => ({ message: "erro antigo" }) });
+  await antigoErro;
+  assert.equal(api.S.meus[0].id, 3);
+  assert.equal(api.S.meusErro, "");
+});
+
 test("histórico da frota apresenta litros calculados e evita zero quando dados faltam", () => {
   const { api, element } = app();
   api.S.tela = "frota"; api.S.abastVeiculo = "ABC"; api.S.abastDias = 30;
