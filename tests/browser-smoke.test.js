@@ -114,6 +114,16 @@ test("navegação, câmera, reinício e troca de usuário no navegador", { skip:
     await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
     assert.match(await evaluate('document.querySelector("#app").textContent'), /R\$ 100,00/);
     assert.match(await evaluate('document.querySelector("#app").textContent'), /10,00/);
+    await click(".diagnostico-meus summary");
+    const diagPainel = await evaluate('document.querySelector(".diagnostico-meus").textContent');
+    assert.match(diagPainel, /Abastecimentos: 1/);
+    assert.match(diagPainel, /no período 1/);
+    assert.doesNotMatch(diagPainel, /ABC|Posto|100,00|token-Ana/);
+    await click('[data-t="home"]'); await ready('[data-t="meus"]'); await click('[data-t="meus"]');
+    await waitFor(() => evaluate('document.querySelector(".diagnostico-meus") && document.querySelector(".diagnostico-meus").textContent.includes("Abastecimentos: 1")'));
+    assert.equal(await evaluate('document.querySelector(".diagnostico-meus").textContent'), diagPainel);
+    await click('[data-t="home"]'); await ready('[data-t="dre"]'); await click('[data-t="dre"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
     const graficos = await evaluate(`Array.from(document.querySelectorAll(".dre-graf .dre-col i"), el => ({ altura: el.getBoundingClientRect().height, largura: el.getBoundingClientRect().width }))`);
     assert.equal(graficos.length, 2);
     assert.ok(graficos.every(g => g.altura > 0 && g.largura > 0), JSON.stringify(graficos));

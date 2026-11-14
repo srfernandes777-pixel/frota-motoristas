@@ -264,6 +264,35 @@ test("consulta antiga não substitui resultado mais recente nem erro atual", asy
   assert.equal(api.S.meusErro, "");
 });
 
+test("diagnóstico compara contagens anônimas de status e período nas duas telas", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const item = (tipo, status, dia) => ({ _tipo: tipo, status, [tipo === "abast" ? "data_abast" : "data_coleta"]: dia, placa: "PLACA-PRIVADA", motorista: "NOME-PRIVADO", valor_total: 987654, valor_litro: 5, odometro: 1 });
+  api.S.dreDias = 30;
+  api.S.meus = [
+    item("abast", "aprovado", data(4)), item("abast", "pendente", data(31)),
+    item("abast", "aprovado", data(-1)), item("abast", "pendente", null),
+    item("abast", "rejeitado", data(0)), item("abast", "status-privado", data(0)),
+    item("coleta", "cancelado", data(0))
+  ];
+  const diagnostico = () => element("#app").innerHTML.match(/<details class="card diagnostico-meus">[\s\S]*?<\/details>/)[0];
+  api.S.tela = "dre"; api.render();
+  const painel = diagnostico();
+  assert.match(painel, /Resultado desta tela: 7 registro/);
+  assert.match(painel, /Abastecimentos: 6/);
+  assert.match(painel, /Aprovados: 2; pendentes: 2; rejeitados: 1; cancelados: 0; outros estados: 1/);
+  assert.match(painel, /no período 1; antes 1; depois 1; data inválida ou ausente 1/);
+  assert.match(painel, /Coletas: 1/);
+  assert.doesNotMatch(painel, /PLACA-PRIVADA|NOME-PRIVADO|987654|status-privado|token/);
+  api.S.tela = "meus"; api.render();
+  assert.equal(diagnostico(), painel);
+  api.S.meus = null; api.S.meusErro = "Sem sinal"; api.render();
+  assert.match(diagnostico(), /Dados indisponíveis/);
+  assert.doesNotMatch(diagnostico(), /Resultado desta tela: 0/);
+  api.S.meus = []; api.render();
+  assert.match(diagnostico(), /Resultado desta tela: 0 registro/);
+});
+
 test("histórico da frota apresenta litros calculados e evita zero quando dados faltam", () => {
   const { api, element } = app();
   api.S.tela = "frota"; api.S.abastVeiculo = "ABC"; api.S.abastDias = 30;

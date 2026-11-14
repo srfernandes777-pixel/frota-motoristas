@@ -18,4 +18,6 @@ No painel, litros são calculados como valor total dividido pelo preço por litr
 
 O tema inicialmente acompanha o sistema operacional. Ao selecionar o tema claro ou escuro, a escolha fica guardada no navegador.
 
+Em “Meus registros” e “Meu painel”, o diagnóstico da consulta pode ser aberto para comparar contagens anônimas de tipo, status e data da resposta carregada em cada tela. Ele não inclui a fila local, não envia nem salva informações e não revela nome, placa, valores ou token. Dados indisponíveis não são apresentados como uma lista vazia.
+
 Para executar os testes locais, use `node --test tests\driver-workflow.test.js`.

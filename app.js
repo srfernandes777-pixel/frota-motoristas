@@ -541,9 +541,11 @@
   function resumo(tipo, r) {
     if (tipo === "local") return `<b>📍 Localização</b><br>${esc(r.cliente)} · precisão ${esc(r.precisao_m)} m`;
     if (tipo === "manutencao") return `<b>🔧 Manutenção</b><br>${esc(r.placa || "")} · ${esc(CATEGORIAS[r.categoria] || r.categoria)}<br>${esc(CRITICIDADES[r.criticidade] || r.criticidade)}`;
+    const data = dataOperacional(tipo === "abast" ? r.data_abast : r.data_coleta);
+    const dataExibida = data ? brData(data) : "Data ausente ou inválida";
     return tipo === "abast"
-      ? `<b>⛽ Abastecimento</b> · ${brData(r.data_abast)}<br>${esc(r.placa)} · ${esc(r.combustivel)} · R$ ${num(r.valor_total)} · odômetro ${fmtInt(r.odometro)}`
-      : `<b>📦 Coleta</b> · ${brData(r.data_coleta)}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>Coletou: 20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}${(r.qtd_ent_20 || 0) + (r.qtd_ent_60 || 0) + (r.qtd_ent_200 || 0) ? `<br>Deixou: 20 L × ${r.qtd_ent_20 || 0} · 60 L × ${r.qtd_ent_60 || 0} · 200 L × ${r.qtd_ent_200 || 0}` : ""}`;
+      ? `<b>⛽ Abastecimento</b> · ${dataExibida}<br>${esc(r.placa)} · ${esc(r.combustivel)} · R$ ${num(r.valor_total)} · odômetro ${fmtInt(r.odometro)}`
+      : `<b>📦 Coleta</b> · ${dataExibida}<br>${esc(r.placa)} · ${esc(r.cliente || "sem cliente")}<br>Coletou: 20 L × ${r.qtd_20} · 60 L × ${r.qtd_60} · 200 L × ${r.qtd_200}${(r.qtd_ent_20 || 0) + (r.qtd_ent_60 || 0) + (r.qtd_ent_200 || 0) ? `<br>Deixou: 20 L × ${r.qtd_ent_20 || 0} · 60 L × ${r.qtd_ent_60 || 0} · 200 L × ${r.qtd_ent_200 || 0}` : ""}`;
   }
   const mapsUrl = l => `https://www.google.com/maps/dir/?api=1&destination=${l.latitude},${l.longitude}`;
   const wazeUrl = l => `https://waze.com/ul?ll=${l.latitude},${l.longitude}&navigate=yes`;
@@ -590,12 +592,33 @@
       km: distancia != null && distancia > 0 ? distancia : null
     };
   }
+  function diagnosticoMeus(dias) {
+    if (S.meus == null) return `<details class="card diagnostico-meus"><summary>Diagnóstico da consulta</summary><p>Dados indisponíveis: a consulta ainda não terminou ou falhou. Nenhuma contagem foi calculada.</p></details>`;
+    const inicio = diasAtras(dias - 1), fim = hoje();
+    const linhas = ["abast", "coleta"].map(tipo => {
+      const registros = S.meus.filter(r => r._tipo === tipo);
+      const status = nome => registros.filter(r => r.status === nome).length;
+      const elegiveis = registros.filter(r => r.status === "aprovado" || r.status === "pendente");
+      const datas = elegiveis.map(r => dataOperacional(tipo === "abast" ? r.data_abast : r.data_coleta));
+      const dentro = datas.filter(d => d && d >= inicio && d <= fim).length;
+      const antes = datas.filter(d => d && d < inicio).length;
+      const depois = datas.filter(d => d && d > fim).length;
+      const invalidas = datas.filter(d => !d).length;
+      const outros = registros.length - status("aprovado") - status("pendente") - status("rejeitado") - status("cancelado");
+      return `<p><b>${tipo === "abast" ? "Abastecimentos" : "Coletas"}: ${registros.length}</b><br>
+        Aprovados: ${status("aprovado")}; pendentes: ${status("pendente")}; rejeitados: ${status("rejeitado")}; cancelados: ${status("cancelado")}; outros estados: ${outros}.<br>
+        Entre aprovados e pendentes: no período ${dentro}; antes ${antes}; depois ${depois}; data inválida ou ausente ${invalidas}.</p>`;
+    }).join("");
+    return `<details class="card diagnostico-meus"><summary>Diagnóstico da consulta</summary>
+      <p>Resultado desta tela: ${S.meus.length} registro(s). Período do painel: últimos ${dias} dias, ${brData(inicio)} a ${brData(fim)}, conforme o relógio do celular.</p>${linhas}
+      <p class="peq">Somente contagens da resposta carregada nesta tela; não inclui fila local. Não envia nem salva este diagnóstico.</p></details>`;
+  }
   function vDre() {
     const dias = S.dreDias || 30, desde = diasAtras(dias - 1), ate = hoje();
     const cab = `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📊 Meu painel</h2>
       <div class="dre-per">${[7, 30].map(d => `<button data-act="dre-dias" data-d="${d}" class="${dias === d ? "on" : ""}">Últimos ${d} dias</button>`).join("")}</div>
       <button data-act="atualizar-painel">🔄 Atualizar painel</button>`;
-    if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
+    if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>${diagnosticoMeus(dias)}`;
     const vale = r => ["pendente", "aprovado"].includes(r.status);
     const elegiveis = S.meus.filter(vale).map(r => ({ r, data: dataOperacional(r._tipo === "abast" ? r.data_abast : r.data_coleta) }));
     const antes = elegiveis.filter(x => x.data && x.data < desde).length;
@@ -632,6 +655,7 @@
       <p class="peq">Período neste celular: ${brData(desde)} a ${brData(ate)}.</p>
       ${!ab.length && !co.length ? '<div class="info">Nenhum registro elegível neste período.</div>' : ""}
       ${avisoPeriodo ? `<div class="aviso">${esc(avisoPeriodo)}</div>` : ""}
+      ${diagnosticoMeus(dias)}
       <h2>Resumo (DRE)</h2>
       <div class="dre-kpi">${kpi(comValor.length ? "R$ " + num(gasto) : "—", "Gasto combustível")}${kpi(comLitros.length ? num(litros) + " L" : "—", "Litros")}${kpi(litrosPreco > 0 ? "R$ " + num(valorPreco / litrosPreco) : "—", "Preço médio/L")}</div>
       <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>
@@ -655,6 +679,7 @@
     else servidor = S.meus.map(r => `<div class="card">${resumo(r._tipo, r)}<div class="st">${STATUS[r.status] || esc(r.status)}</div>${r.status === "rejeitado" && r.motivo ? `<div class="erro">Motivo: ${esc(r.motivo)}</div>` : ""}
       ${["pendente", "rejeitado"].includes(r.status) ? `<div class="linha"><button data-act="corrigir-srv" data-id="${r.id}" data-t="${r._tipo}">✏️ Corrigir</button><button class="perigo" data-act="cancelar-srv" data-id="${r.id}" data-t="${r._tipo}">🗑️ Cancelar</button></div>` : ""}</div>`).join("");
     return `${barra()}<button data-act="ir" data-t="home" style="width:auto;min-height:2.6rem">← Início</button><h2>📋 Meus registros</h2><div id="msg"></div>
+      ${diagnosticoMeus(S.dreDias || 30)}
       ${locais ? `<h2>No celular (ainda não enviados)</h2>${locais}` : ""}<h2>Já enviados (últimos 30 dias)</h2>${servidor}`;
   }
   function vFrota() {
