@@ -26,7 +26,7 @@ function app(shared) {
     fetch: async () => { throw new Error("offline"); }
   };
   context.window = { CONFIG: { SUPABASE_URL: "https://example.supabase.co", SUPABASE_KEY: "test-key" }, crypto: context.crypto, addEventListener() {}, matchMedia: () => ({ matches: false, addEventListener() {} }) };
-  let source = fs.readFileSync("app.js", "utf8");
+  let source = fs.readFileSync(process.env.FROTA_APP_SOURCE || "app.js", "utf8");
   source = source.replace("window.__frota = { S, acoes, sincronizar, idb, iniciar };", "window.__frota = { S, acoes, sincronizar, idb, iniciar, render, atualizarListas, carregarManutencoes, carregarMeus, guardarContexto };");
   source = source.replace("  iniciar();", "");
   vm.runInNewContext(source, context);
@@ -180,6 +180,72 @@ test("painel vazio mantém resumos e gráficos e explica o alcance da consulta",
   assert.match(html, /data-act="atualizar-painel"/);
 });
 
+test("registros aprovados aparecem na lista mas informam por que não entram no período", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  api.S.meus = [
+    { _tipo: "abast", status: "aprovado", data_abast: data(10), placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 },
+    { _tipo: "abast", status: "aprovado", data_abast: data(-1), placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 }
+  ];
+  api.S.tela = "meus"; api.render();
+  assert.match(element("#app").innerHTML, /Aprovado/);
+  api.S.tela = "dre"; api.S.dreDias = 7; api.render();
+  assert.match(element("#app").innerHTML, /1 registro.*antes do período/);
+  assert.match(element("#app").innerHTML, /1 registro.*após o período/);
+  api.S.dreDias = 30; api.render();
+  assert.match(element("#app").innerHTML, /R\$ 100,00/);
+  assert.match(element("#app").innerHTML, /200 km/);
+  assert.match(element("#app").innerHTML, /1 registro.*após o período/);
+});
+
+test("abastecimento aprovado de quatro dias aparece em registros e painel de 30 dias", async () => {
+  const { api, context, element } = app();
+  const d = new Date(); d.setDate(d.getDate() - 4);
+  const data = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const registro = { _tipo: "abast", status: "aprovado", data_abast: data, criado_em: new Date().toISOString(),
+    placa: "ABC", combustivel: "Diesel", posto: "Posto", valor_total: 100, valor_litro: 5, litros: 20, odometro: 1000, km_rodados: null };
+  context.fetch = async () => ({ ok: true, json: async () => [registro] });
+  api.S.tela = "meus"; await api.carregarMeus(); api.render();
+  assert.match(element("#app").innerHTML, /Aprovado/);
+  api.S.tela = "dre"; api.S.dreDias = 30; await api.carregarMeus(); api.render();
+  const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 100,00/);
+  assert.match(html, /20,00 L/);
+  assert.match(html, /Gasto por dia \(R\$\)<\/h2><div class="dre-graf">/);
+  assert.match(html, /Rendimento \(km\/L\)<\/h2><p class="peq">Sem dados no período/);
+  assert.match(html, /Alguns abastecimentos não têm distância calculada/);
+  assert.doesNotMatch(html, /Nenhum registro elegível/);
+});
+
+test("datas ISO com hora no dia atual entram no painel e no gráfico diário", () => {
+  const { api, element } = app();
+  const d = new Date(), data = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  api.S.tela = "dre"; api.S.meus = [
+    { _tipo: "abast", status: "aprovado", data_abast: data + "T12:00:00", placa: "ABC", valor_total: "100.00", valor_litro: "5.00", km_rodados: "200" },
+    { _tipo: "abast", status: "pendente", data_abast: data + "T18:00:00", placa: "ABC", valor_total: 50, valor_litro: 5, km_rodados: 100 }
+  ];
+  api.render(); const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 150,00/);
+  assert.match(html, /300 km/);
+  assert.equal((html.match(/class="dre-graf"/g) || []).length, 2);
+  assert.match(html, /<em>150<\/em>/);
+});
+
+test("filtro distingue limites, data inválida e situação não elegível", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const item = (dia, status = "aprovado") => ({ _tipo: "abast", status, data_abast: dia, placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 });
+  api.S.tela = "dre"; api.S.dreDias = 30; api.S.meus = [
+    item(data(29)), item(data(30)), item(data(-1)), item("2026-02-30"), item(null), item(data(0), "rejeitado")
+  ];
+  api.render(); const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 100,00/);
+  assert.match(html, /1 registro\(s\) antes do período/);
+  assert.match(html, /1 registro\(s\) após o período/);
+  assert.match(html, /2 registro\(s\) com data ausente ou inválida/);
+  assert.match(html, /Período neste celular/);
+});
+
 test("consulta antiga não substitui resultado mais recente nem erro atual", async () => {
   const { api, context } = app(), pendentes = [];
   context.fetch = () => new Promise(resolve => pendentes.push(resolve));
@@ -196,6 +262,35 @@ test("consulta antiga não substitui resultado mais recente nem erro atual", asy
   await antigoErro;
   assert.equal(api.S.meus[0].id, 3);
   assert.equal(api.S.meusErro, "");
+});
+
+test("diagnóstico compara contagens anônimas de status e período nas duas telas", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const item = (tipo, status, dia) => ({ _tipo: tipo, status, [tipo === "abast" ? "data_abast" : "data_coleta"]: dia, placa: "PLACA-PRIVADA", motorista: "NOME-PRIVADO", valor_total: 987654, valor_litro: 5, odometro: 1 });
+  api.S.dreDias = 30;
+  api.S.meus = [
+    item("abast", "aprovado", data(4)), item("abast", "pendente", data(31)),
+    item("abast", "aprovado", data(-1)), item("abast", "pendente", null),
+    item("abast", "rejeitado", data(0)), item("abast", "status-privado", data(0)),
+    item("coleta", "cancelado", data(0))
+  ];
+  const diagnostico = () => element("#app").innerHTML.match(/<details class="card diagnostico-meus">[\s\S]*?<\/details>/)[0];
+  api.S.tela = "dre"; api.render();
+  const painel = diagnostico();
+  assert.match(painel, /Resultado desta tela: 7 registro/);
+  assert.match(painel, /Abastecimentos: 6/);
+  assert.match(painel, /Aprovados: 2; pendentes: 2; rejeitados: 1; cancelados: 0; outros estados: 1/);
+  assert.match(painel, /no período 1; antes 1; depois 1; data inválida ou ausente 1/);
+  assert.match(painel, /Coletas: 1/);
+  assert.doesNotMatch(painel, /PLACA-PRIVADA|NOME-PRIVADO|987654|status-privado|token/);
+  api.S.tela = "meus"; api.render();
+  assert.equal(diagnostico(), painel);
+  api.S.meus = null; api.S.meusErro = "Sem sinal"; api.render();
+  assert.match(diagnostico(), /Dados indisponíveis/);
+  assert.doesNotMatch(diagnostico(), /Resultado desta tela: 0/);
+  api.S.meus = []; api.render();
+  assert.match(diagnostico(), /Resultado desta tela: 0 registro/);
 });
 
 test("histórico da frota apresenta litros calculados e evita zero quando dados faltam", () => {
