@@ -117,6 +117,15 @@ test("navegação, câmera, reinício e troca de usuário no navegador", { skip:
     const graficos = await evaluate(`Array.from(document.querySelectorAll(".dre-graf .dre-col i"), el => ({ altura: el.getBoundingClientRect().height, largura: el.getBoundingClientRect().width }))`);
     assert.equal(graficos.length, 2);
     assert.ok(graficos.every(g => g.altura > 0 && g.largura > 0), JSON.stringify(graficos));
+    const anterior = new Date(); anterior.setDate(anterior.getDate() - 10);
+    const dataAnterior = `${anterior.getFullYear()}-${String(anterior.getMonth() + 1).padStart(2, "0")}-${String(anterior.getDate()).padStart(2, "0")}`;
+    respostas.app_meus = [{ _tipo: "abast", status: "aprovado", data_abast: dataAnterior, placa: "ABC", posto: "Posto", valor_total: 100, valor_litro: 5, km_rodados: 200 }];
+    await click('[data-act="atualizar-painel"]');
+    await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("200 km")'));
+    await click('[data-act="dre-dias"][data-d="7"]');
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /antes do período/);
+    await click('[data-act="dre-dias"][data-d="30"]');
+    assert.match(await evaluate('document.querySelector("#app").textContent'), /200 km/);
     respostas.app_meus = [];
     await click('[data-act="atualizar-painel"]');
     await waitFor(() => evaluate('document.querySelector("#app").textContent.includes("Nenhum registro elegível")'));

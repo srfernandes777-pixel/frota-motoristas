@@ -51,6 +51,11 @@
   const hoje = () => isoData(new Date());
   const diasAtras = n => { const d = new Date(); d.setDate(d.getDate() - n); return isoData(d); };
   const brData = s => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+  function dataOperacional(valor) {
+    if (typeof valor !== "string" || !/^\d{4}-\d{2}-\d{2}(?:T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?)?$/.test(valor)) return null;
+    const data = valor.slice(0, 10), d = new Date(data + "T00:00:00Z");
+    return Number.isFinite(d.getTime()) && d.toISOString().slice(0, 10) === data ? data : null;
+  }
   const uuid = () => (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
     : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === "x" ? r : (r & 3 | 8)).toString(16); });
 
@@ -592,10 +597,19 @@
       <button data-act="atualizar-painel">🔄 Atualizar painel</button>`;
     if (S.meus == null) return `${cab}<div class="info">${esc(S.meusErro || "Carregando…")}</div>`;
     const vale = r => ["pendente", "aprovado"].includes(r.status);
-    const noPeriodo = data => typeof data === "string" && data >= desde && data <= ate;
-    const ab = S.meus.filter(r => r._tipo === "abast" && vale(r) && noPeriodo(r.data_abast))
+    const elegiveis = S.meus.filter(vale).map(r => ({ r, data: dataOperacional(r._tipo === "abast" ? r.data_abast : r.data_coleta) }));
+    const antes = elegiveis.filter(x => x.data && x.data < desde).length;
+    const depois = elegiveis.filter(x => x.data && x.data > ate).length;
+    const invalidas = elegiveis.filter(x => !x.data).length;
+    const periodo = elegiveis.filter(x => x.data && x.data >= desde && x.data <= ate);
+    const ab = periodo.filter(x => x.r._tipo === "abast").map(x => Object.assign({}, x.r, { data_abast: x.data }))
       .sort((a, b) => String(a.data_abast).localeCompare(String(b.data_abast)) || String(a.criado_em).localeCompare(String(b.criado_em)));
-    const co = S.meus.filter(r => r._tipo === "coleta" && vale(r) && noPeriodo(r.data_coleta));
+    const co = periodo.filter(x => x.r._tipo === "coleta").map(x => x.r);
+    const avisoPeriodo = [
+      antes ? `${antes} registro(s) antes do período${dias === 7 ? "; tente os últimos 30 dias" : ""}.` : "",
+      depois ? `${depois} registro(s) após o período; confira a data no celular e nos registros.` : "",
+      invalidas ? `${invalidas} registro(s) com data ausente ou inválida; avise o responsável.` : ""
+    ].filter(Boolean).join(" ");
     const dados = ab.map(r => ({ r, ...valoresAbastecimento(r) }));
     const soma = (lista, campo) => lista.reduce((total, item) => total + item[campo], 0);
     const comValor = dados.filter(x => x.valor != null), comLitros = dados.filter(x => x.litros != null);
@@ -615,7 +629,9 @@
     const linhasPl = Object.keys(pl).map(k => `<tr><td>${esc(k)}</td><td>${pl[k].ng ? "R$ " + num(pl[k].g) : "—"}</td><td>${pl[k].nl ? num(pl[k].l) + " L" : "—"}</td><td>${pl[k].lk ? num(pl[k].km / pl[k].lk) : "—"}</td></tr>`).join("");
     const ult = dados.slice().reverse().slice(0, 10).map(x => `<tr><td>${brData(x.r.data_abast).slice(0, 5)}</td><td>${esc(x.r.posto || "")}</td><td>${x.valor != null ? "R$ " + num(x.valor) : "—"}</td><td>${x.km != null && x.litros != null && x.valor != null && x.valor > 0 ? num(x.km / x.litros) : "—"}</td></tr>`).join("");
     return `${cab}
-      ${!ab.length && !co.length ? '<div class="info">Nenhum registro elegível neste período. Confira a conexão e seus registros enviados ou atualize o painel.</div>' : ""}
+      <p class="peq">Período neste celular: ${brData(desde)} a ${brData(ate)}.</p>
+      ${!ab.length && !co.length ? '<div class="info">Nenhum registro elegível neste período.</div>' : ""}
+      ${avisoPeriodo ? `<div class="aviso">${esc(avisoPeriodo)}</div>` : ""}
       <h2>Resumo (DRE)</h2>
       <div class="dre-kpi">${kpi(comValor.length ? "R$ " + num(gasto) : "—", "Gasto combustível")}${kpi(comLitros.length ? num(litros) + " L" : "—", "Litros")}${kpi(litrosPreco > 0 ? "R$ " + num(valorPreco / litrosPreco) : "—", "Preço médio/L")}</div>
       <div class="dre-kpi">${kpi(km ? fmtInt(km) + " km" : "—", "Km rodados")}${kpi(tr(cons == null ? null : num(cons)), "Rendimento km/L")}${kpi(custoKm == null ? "—" : "R$ " + num(custoKm), "Custo por km")}</div>

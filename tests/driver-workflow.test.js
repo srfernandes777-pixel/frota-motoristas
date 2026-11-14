@@ -180,6 +180,53 @@ test("painel vazio mantém resumos e gráficos e explica o alcance da consulta",
   assert.match(html, /data-act="atualizar-painel"/);
 });
 
+test("registros aprovados aparecem na lista mas informam por que não entram no período", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  api.S.meus = [
+    { _tipo: "abast", status: "aprovado", data_abast: data(10), placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 },
+    { _tipo: "abast", status: "aprovado", data_abast: data(-1), placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 }
+  ];
+  api.S.tela = "meus"; api.render();
+  assert.match(element("#app").innerHTML, /Aprovado/);
+  api.S.tela = "dre"; api.S.dreDias = 7; api.render();
+  assert.match(element("#app").innerHTML, /1 registro.*antes do período/);
+  assert.match(element("#app").innerHTML, /1 registro.*após o período/);
+  api.S.dreDias = 30; api.render();
+  assert.match(element("#app").innerHTML, /R\$ 100,00/);
+  assert.match(element("#app").innerHTML, /200 km/);
+  assert.match(element("#app").innerHTML, /1 registro.*após o período/);
+});
+
+test("datas ISO com hora no dia atual entram no painel e no gráfico diário", () => {
+  const { api, element } = app();
+  const d = new Date(), data = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  api.S.tela = "dre"; api.S.meus = [
+    { _tipo: "abast", status: "aprovado", data_abast: data + "T12:00:00", placa: "ABC", valor_total: "100.00", valor_litro: "5.00", km_rodados: "200" },
+    { _tipo: "abast", status: "pendente", data_abast: data + "T18:00:00", placa: "ABC", valor_total: 50, valor_litro: 5, km_rodados: 100 }
+  ];
+  api.render(); const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 150,00/);
+  assert.match(html, /300 km/);
+  assert.equal((html.match(/class="dre-graf"/g) || []).length, 2);
+  assert.match(html, /<em>150<\/em>/);
+});
+
+test("filtro distingue limites, data inválida e situação não elegível", () => {
+  const { api, element } = app();
+  const data = dias => { const d = new Date(); d.setDate(d.getDate() - dias); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+  const item = (dia, status = "aprovado") => ({ _tipo: "abast", status, data_abast: dia, placa: "ABC", valor_total: 100, valor_litro: 5, km_rodados: 200 });
+  api.S.tela = "dre"; api.S.dreDias = 30; api.S.meus = [
+    item(data(29)), item(data(30)), item(data(-1)), item("2026-02-30"), item(null), item(data(0), "rejeitado")
+  ];
+  api.render(); const html = element("#app").innerHTML;
+  assert.match(html, /R\$ 100,00/);
+  assert.match(html, /1 registro\(s\) antes do período/);
+  assert.match(html, /1 registro\(s\) após o período/);
+  assert.match(html, /2 registro\(s\) com data ausente ou inválida/);
+  assert.match(html, /Período neste celular/);
+});
+
 test("consulta antiga não substitui resultado mais recente nem erro atual", async () => {
   const { api, context } = app(), pendentes = [];
   context.fetch = () => new Promise(resolve => pendentes.push(resolve));
